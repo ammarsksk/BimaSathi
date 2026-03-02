@@ -1,0 +1,118 @@
+/* ============================================
+   Analytics — v4: Light Mode
+   ============================================ */
+
+/* ── Summary Stats ── */
+.analytics-summary {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.analytics-stat {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 18px 20px;
+}
+
+.analytics-stat-value {
+    font-family: var(--font-display);
+    font-size: 1.5rem;
+    color: var(--text-primary);
+    line-height: 1;
+}
+
+.analytics-stat-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+@media (max-width: 900px) {
+    .analytics-summary {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 500px) {
+    .analytics-summary {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ── Chart Grid ── */
+.analytics-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+}
+
+.analytics-card {
+    padding: 24px;
+}
+
+.analytics-card h3 {
+    font-family: var(--font-body);
+    font-size: 0.92rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 16px;
+}
+
+.card-wide {
+    grid-column: span 2;
+}
+
+.chart-wrap {
+    width: 100%;
+}
+
+@media (max-width: 768px) {
+    .analytics-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .card-wide {
+        grid-column: span 1;
+    }
+}
+
+/* ── Pie Legend ── */
+.pie-legend {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-left: 16px;
+}
+
+.pie-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+}
+
+.pie-legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.pie-legend-label {
+    flex: 1;
+    color: var(--text-body);
+}
+
+.pie-legend-value {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* ── Recharts overrides for light theme ── */
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+    stroke: rgba(0, 0, 0, 0.04);
+}

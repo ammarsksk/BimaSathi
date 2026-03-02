@@ -1,0 +1,131 @@
+/* ============================================
+   Claims Queue — v4: Light Mode
+   ============================================ */
+
+.claims-page {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+/* ── Filters ── */
+.claims-filters {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 20px;
+}
+
+.filter-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    color: var(--text-muted);
+}
+
+.filter-search-input {
+    border: none;
+    background: none;
+    outline: none;
+    font-size: 0.88rem;
+    color: var(--text-body);
+    font-family: var(--font-body);
+    width: 100%;
+}
+
+.filter-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-muted);
+}
+
+.filter-group .select-field {
+    width: auto;
+    min-width: 120px;
+    padding: 7px 12px;
+    font-size: 0.82rem;
+}
+
+.filter-count {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+/* ── Table ── */
+.claims-table-wrap {
+    padding: 0;
+    overflow-x: auto;
+}
+
+.claims-table {
+    min-width: 800px;
+}
+
+.claims-table th {
+    background: var(--bg-soft);
+}
+
+.td-farmer {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.td-id {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.td-deadline-urgent {
+    color: var(--red);
+    font-weight: 600;
+}
+
+.td-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.action-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-xs);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    transition: all 0.15s;
+}
+
+.action-btn:hover {
+    background: var(--primary-soft);
+    color: var(--primary);
+}
+
+/* ── Pagination ── */
+.claims-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px;
+}
+
+.pagination-info {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.pagination-buttons {
+    display: flex;
+    gap: 4px;
+}
+
+@media (max-width: 600px) {
+    .claims-filters {
+        flex-direction: column;
+        align-items: stretch;
+    }
+}

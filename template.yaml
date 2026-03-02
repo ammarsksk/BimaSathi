@@ -1,0 +1,422 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: BimaSathi — WhatsApp-first AI Crop Insurance Claim Assistant
+
+Globals:
+  Function:
+    Runtime: nodejs18.x
+    Timeout: 300
+    MemorySize: 512
+    Environment:
+      Variables:
+        AWS_REGION_NAME: !Ref AWS::Region
+        USERS_TABLE: !Ref UsersTable
+        CLAIMS_TABLE: !Ref ClaimsTable
+        CONVERSATIONS_TABLE: !Ref ConversationsTable
+        DEADLINES_TABLE: !Ref DeadlinesTable
+        AUDIT_LOG_TABLE: !Ref AuditLogTable
+        CONSENT_TABLE: !Ref ConsentTable
+        EVIDENCE_BUCKET: !Ref EvidenceBucket
+        BEDROCK_MODEL_ID: anthropic.claude-3-sonnet-20240229-v1:0
+        BEDROCK_REGION: us-east-1
+        COGNITO_USER_POOL_ID: !Ref UserPool
+        COGNITO_CLIENT_ID: !Ref UserPoolClient
+
+Parameters:
+  TwilioAccountSid:
+    Type: String
+    NoEcho: true
+  TwilioAuthToken:
+    Type: String
+    NoEcho: true
+  TwilioWhatsAppNumber:
+    Type: String
+    Default: 'whatsapp:+14155238886'
+  TwilioVerifyServiceSid:
+    Type: String
+    NoEcho: true
+
+Resources:
+  # ═══════════════════════════════════════
+  # API GATEWAY
+  # ═══════════════════════════════════════
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowOrigin: "'*'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+
+  # ═══════════════════════════════════════
+  # LAMBDA FUNCTIONS
+  # ═══════════════════════════════════════
+  WhatsAppWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-whatsapp-webhook
+      Handler: src/lambdas/whatsapp-webhook/index.handler
+      Events:
+        Webhook:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /webhook/whatsapp
+            Method: post
+      Environment:
+        Variables:
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          TWILIO_WHATSAPP_NUMBER: !Ref TwilioWhatsAppNumber
+          TWILIO_VERIFY_SERVICE_SID: !Ref TwilioVerifyServiceSid
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref UsersTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref ConversationsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref DeadlinesTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref ConsentTable }
+        - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
+        - Statement:
+            - Effect: Allow
+              Action: ['bedrock:InvokeModel']
+              Resource: '*'
+            - Effect: Allow
+              Action: ['rekognition:DetectLabels', 'rekognition:DetectModerationLabels']
+              Resource: '*'
+            - Effect: Allow
+              Action: ['transcribe:StartTranscriptionJob', 'transcribe:GetTranscriptionJob']
+              Resource: '*'
+            - Effect: Allow
+              Action: ['polly:SynthesizeSpeech']
+              Resource: '*'
+
+  ConversationEngineFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-conversation-engine
+      Handler: src/lambdas/conversation-engine/index.handler
+      Timeout: 300
+      MemorySize: 1024
+
+  AuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-auth
+      Handler: src/lambdas/auth/index.handler
+      Events:
+        SendOtp:
+          Type: Api
+          Properties: { RestApiId: !Ref ApiGateway, Path: /auth, Method: post }
+      Environment:
+        Variables:
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          TWILIO_VERIFY_SERVICE_SID: !Ref TwilioVerifyServiceSid
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref UsersTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref ConsentTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
+        - Statement:
+            - Effect: Allow
+              Action: ['cognito-idp:AdminCreateUser', 'cognito-idp:AdminInitiateAuth']
+              Resource: !GetAtt UserPool.Arn
+
+  VoiceProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-voice-processor
+      Handler: src/lambdas/voice-processor/index.handler
+      Timeout: 120
+      MemorySize: 1024
+
+  PhotoProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-photo-processor
+      Handler: src/lambdas/photo-processor/index.handler
+      Timeout: 60
+      MemorySize: 1024
+
+  ClaimGeneratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-claim-generator
+      Handler: src/lambdas/claim-generator/index.handler
+      MemorySize: 1024
+
+  DeadlineTriggerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-deadline-trigger
+      Handler: src/lambdas/deadline-trigger/index.handler
+      Events:
+        ScheduleRule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+            Enabled: true
+      Environment:
+        Variables:
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          TWILIO_WHATSAPP_NUMBER: !Ref TwilioWhatsAppNumber
+
+  StatusPollerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-status-poller
+      Handler: src/lambdas/status-poller/index.handler
+      Events:
+        DailyPoll:
+          Type: Schedule
+          Properties:
+            Schedule: rate(24 hours)
+            Enabled: true
+
+  AppealGeneratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-appeal-generator
+      Handler: src/lambdas/appeal-generator/index.handler
+
+  OperatorApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-operator-api
+      Handler: src/lambdas/operator-api/index.handler
+      Events:
+        ListClaims:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /claims
+            Method: get
+        GetClaim:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: "/claims/{id}"
+            Method: get
+        SubmitClaim:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: "/claims/{id}/submit"
+            Method: post
+        Analytics:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /analytics
+            Method: get
+        CreateFarmer:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /farmers
+            Method: post
+        ListFarmers:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /farmers
+            Method: get
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref UsersTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
+        - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
+
+  # ═══════════════════════════════════════
+  # DYNAMODB TABLES
+  # ═══════════════════════════════════════
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: bimasathi-users
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: phoneNumber, AttributeType: S }
+        - { AttributeName: userId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: phoneNumber, KeyType: HASH }
+        - { AttributeName: userId, KeyType: RANGE }
+      SSESpecification: { SSEEnabled: true }
+
+  ClaimsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: bimasathi-claims
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: claimId, AttributeType: S }
+        - { AttributeName: userId, AttributeType: S }
+        - { AttributeName: status, AttributeType: S }
+        - { AttributeName: lastUpdated, AttributeType: S }
+      KeySchema:
+        - { AttributeName: claimId, KeyType: HASH }
+        - { AttributeName: userId, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        - IndexName: statusIndex
+          KeySchema:
+            - { AttributeName: status, KeyType: HASH }
+            - { AttributeName: lastUpdated, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      SSESpecification: { SSEEnabled: true }
+
+  ConversationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: bimasathi-conversations
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: phoneNumber, AttributeType: S }
+        - { AttributeName: sessionId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: phoneNumber, KeyType: HASH }
+        - { AttributeName: sessionId, KeyType: RANGE }
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      SSESpecification: { SSEEnabled: true }
+
+  DeadlinesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: bimasathi-deadlines
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: claimId, AttributeType: S }
+        - { AttributeName: deadline, AttributeType: S }
+      KeySchema:
+        - { AttributeName: claimId, KeyType: HASH }
+        - { AttributeName: deadline, KeyType: RANGE }
+      SSESpecification: { SSEEnabled: true }
+
+  AuditLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: bimasathi-audit-log
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: claimId, AttributeType: S }
+        - { AttributeName: timestamp, AttributeType: S }
+      KeySchema:
+        - { AttributeName: claimId, KeyType: HASH }
+        - { AttributeName: timestamp, KeyType: RANGE }
+      SSESpecification: { SSEEnabled: true }
+
+  ConsentTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: bimasathi-consent
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: farmerId, AttributeType: S }
+        - { AttributeName: helperId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: farmerId, KeyType: HASH }
+        - { AttributeName: helperId, KeyType: RANGE }
+      SSESpecification: { SSEEnabled: true }
+
+  # ═══════════════════════════════════════
+  # S3 BUCKET
+  # ═══════════════════════════════════════
+  EvidenceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'bimasathi-evidence-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+      LifecycleConfiguration:
+        Rules:
+          - Id: GlacierAfterOneYear
+            Status: Enabled
+            Transitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 365
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ═══════════════════════════════════════
+  # COGNITO
+  # ═══════════════════════════════════════
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: bimasathi-users
+      UsernameAttributes: [phone_number]
+      MfaConfiguration: 'OFF'
+      Schema:
+        - { Name: phone_number, Required: true, Mutable: true }
+        - { Name: role, AttributeDataType: String, Mutable: true }
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: false
+          RequireLowercase: false
+          RequireNumbers: false
+          RequireSymbols: false
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: bimasathi-dashboard
+      UserPoolId: !Ref UserPool
+      ExplicitAuthFlows:
+        - ALLOW_CUSTOM_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      AccessTokenValidity: 24
+      IdTokenValidity: 24
+      RefreshTokenValidity: 30
+
+  # ═══════════════════════════════════════
+  # STEP FUNCTIONS
+  # ═══════════════════════════════════════
+  ClaimSubmissionWorkflow:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: ClaimSubmissionWorkflow
+      DefinitionUri: statemachine/claim-submission.asl.json
+      DefinitionSubstitutions:
+        ValidateInputFunctionArn: !GetAtt WhatsAppWebhookFunction.Arn
+        ValidateEvidenceFunctionArn: !GetAtt PhotoProcessorFunction.Arn
+        ClaimGeneratorFunctionArn: !GetAtt ClaimGeneratorFunction.Arn
+        SubmitToInsurerFunctionArn: !GetAtt OperatorApiFunction.Arn
+        CheckAcknowledgementFunctionArn: !GetAtt StatusPollerFunction.Arn
+        UpdateStatusFunctionArn: !GetAtt StatusPollerFunction.Arn
+        NotifyFarmerFunctionArn: !GetAtt ConversationEngineFunction.Arn
+        AddToOperatorQueueFunctionArn: !GetAtt OperatorApiFunction.Arn
+      Policies:
+        - LambdaInvokePolicy: { FunctionName: !Ref WhatsAppWebhookFunction }
+        - LambdaInvokePolicy: { FunctionName: !Ref PhotoProcessorFunction }
+        - LambdaInvokePolicy: { FunctionName: !Ref ClaimGeneratorFunction }
+        - LambdaInvokePolicy: { FunctionName: !Ref OperatorApiFunction }
+        - LambdaInvokePolicy: { FunctionName: !Ref StatusPollerFunction }
+        - LambdaInvokePolicy: { FunctionName: !Ref ConversationEngineFunction }
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod'
+  WhatsAppWebhookUrl:
+    Description: Twilio webhook URL for WhatsApp
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/webhook/whatsapp'
+  EvidenceBucketName:
+    Description: S3 bucket for evidence storage
+    Value: !Ref EvidenceBucket
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref UserPoolClient

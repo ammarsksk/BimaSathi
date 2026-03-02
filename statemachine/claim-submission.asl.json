@@ -1,0 +1,226 @@
+{
+    "Comment": "BimaSathi Claim Submission Workflow",
+    "StartAt": "ValidateInput",
+    "States": {
+        "ValidateInput": {
+            "Type": "Task",
+            "Resource": "${ValidateInputFunctionArn}",
+            "Comment": "Check all required claim fields and completeness score > 80%",
+            "Parameters": {
+                "claimId.$": "$.claimId",
+                "userId.$": "$.userId"
+            },
+            "ResultPath": "$.validation",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "States.TaskFailed"
+                    ],
+                    "IntervalSeconds": 30,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "INCOMPLETE_CLAIM"
+                    ],
+                    "Next": "HandleIncompleteClaim"
+                },
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "ManualQueue"
+                }
+            ],
+            "Next": "ValidateEvidence"
+        },
+        "ValidateEvidence": {
+            "Type": "Task",
+            "Resource": "${ValidateEvidenceFunctionArn}",
+            "Comment": "Confirm min 3 AI-approved photos with valid GPS and timestamp",
+            "Parameters": {
+                "claimId.$": "$.claimId",
+                "userId.$": "$.userId",
+                "validation.$": "$.validation"
+            },
+            "ResultPath": "$.evidenceValidation",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "States.TaskFailed"
+                    ],
+                    "IntervalSeconds": 30,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "INSUFFICIENT_EVIDENCE"
+                    ],
+                    "Next": "HandleInsufficientEvidence"
+                },
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "ManualQueue"
+                }
+            ],
+            "Next": "GenerateDocuments"
+        },
+        "GenerateDocuments": {
+            "Type": "Task",
+            "Resource": "${ClaimGeneratorFunctionArn}",
+            "Comment": "Generate Claim Form PDF, Evidence Report, Cover Letter, Claim Pack",
+            "Parameters": {
+                "claimId.$": "$.claimId",
+                "claimData.$": "$.validation.claimData"
+            },
+            "ResultPath": "$.documents",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "IntervalSeconds": 30,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "ManualQueue"
+                }
+            ],
+            "Next": "SubmitToInsurer"
+        },
+        "SubmitToInsurer": {
+            "Type": "Task",
+            "Resource": "${SubmitToInsurerFunctionArn}",
+            "Comment": "POST claim data and evidence pack URL to insurer API",
+            "Parameters": {
+                "claimId.$": "$.claimId",
+                "userId.$": "$.userId",
+                "documents.$": "$.documents",
+                "claimData.$": "$.validation.claimData"
+            },
+            "ResultPath": "$.submission",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "States.TaskFailed"
+                    ],
+                    "IntervalSeconds": 60,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 2
+                }
+            ],
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "ManualQueue"
+                }
+            ],
+            "Next": "AwaitAcknowledgement"
+        },
+        "AwaitAcknowledgement": {
+            "Type": "Wait",
+            "Comment": "Wait up to 48 hours for insurer acknowledgement callback",
+            "Seconds": 172800,
+            "Next": "CheckAcknowledgement"
+        },
+        "CheckAcknowledgement": {
+            "Type": "Task",
+            "Resource": "${CheckAcknowledgementFunctionArn}",
+            "Parameters": {
+                "claimId.$": "$.claimId",
+                "submission.$": "$.submission"
+            },
+            "ResultPath": "$.acknowledgement",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "ManualFollowUp"
+                }
+            ],
+            "Next": "IsAcknowledged"
+        },
+        "IsAcknowledged": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.acknowledgement.acknowledged",
+                    "BooleanEquals": true,
+                    "Next": "UpdateStatus"
+                }
+            ],
+            "Default": "ManualFollowUp"
+        },
+        "UpdateStatus": {
+            "Type": "Task",
+            "Resource": "${UpdateStatusFunctionArn}",
+            "Comment": "Write new status to DynamoDB, trigger farmer WhatsApp notification",
+            "Parameters": {
+                "claimId.$": "$.claimId",
+                "userId.$": "$.userId",
+                "newStatus": "Acknowledged",
+                "submission.$": "$.submission"
+            },
+            "End": true
+        },
+        "HandleIncompleteClaim": {
+            "Type": "Task",
+            "Resource": "${NotifyFarmerFunctionArn}",
+            "Parameters": {
+                "claimId.$": "$.claimId",
+                "type": "incomplete",
+                "message": "Your claim is incomplete. Please provide all required information."
+            },
+            "End": true
+        },
+        "HandleInsufficientEvidence": {
+            "Type": "Task",
+            "Resource": "${NotifyFarmerFunctionArn}",
+            "Parameters": {
+                "claimId.$": "$.claimId",
+                "type": "insufficient_evidence",
+                "message": "More evidence photos are needed. Please send at least 3 photos."
+            },
+            "End": true
+        },
+        "ManualFollowUp": {
+            "Type": "Task",
+            "Resource": "${AddToOperatorQueueFunctionArn}",
+            "Comment": "No acknowledgement received within 48 hours",
+            "Parameters": {
+                "claimId.$": "$.claimId",
+                "reason": "No insurer acknowledgement within 48 hours",
+                "priority": "high"
+            },
+            "End": true
+        },
+        "ManualQueue": {
+            "Type": "Task",
+            "Resource": "${AddToOperatorQueueFunctionArn}",
+            "Comment": "Fallback for any unhandled errors",
+            "Parameters": {
+                "claimId.$": "$.claimId",
+                "reason": "Automated processing failed — requires manual review",
+                "priority": "medium"
+            },
+            "End": true
+        }
+    }
+}

@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# AWS SAM build artifacts
+.aws-sam/
+
+# Environment variables (contains secrets!)
+.env
+dashboard/.env
+
+# SAM deploy config (contains secrets!)
+samconfig.toml
+
+# Misc
+stack-events.json
+*.log
+.DS_Store

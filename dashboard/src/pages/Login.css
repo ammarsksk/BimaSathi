@@ -1,0 +1,231 @@
+/* ============================================
+   Login Page — v4: Light Mode
+   ============================================ */
+
+.login-page {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-soft);
+    position: relative;
+    overflow: hidden;
+}
+
+/* ── Ambient Orbs ── */
+.login-bg {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.login-orb {
+    position: absolute;
+    border-radius: 50%;
+}
+
+.login-orb-1 {
+    width: 600px;
+    height: 600px;
+    top: -20%;
+    left: -10%;
+    background: radial-gradient(circle, rgba(37, 99, 235, 0.08), transparent 60%);
+    animation: ambientDrift 20s ease-in-out infinite alternate;
+}
+
+.login-orb-2 {
+    width: 500px;
+    height: 500px;
+    bottom: -15%;
+    right: -10%;
+    background: radial-gradient(circle, rgba(124, 58, 237, 0.06), transparent 60%);
+    animation: ambientDrift 18s ease-in-out infinite alternate-reverse;
+}
+
+@keyframes ambientDrift {
+    0% {
+        transform: translate(0, 0);
+    }
+
+    100% {
+        transform: translate(40px, 30px);
+    }
+}
+
+/* ── Container ── */
+.login-container {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 420px;
+    padding: 0 20px;
+}
+
+.login-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 16px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    transition: color 0.2s;
+}
+
+.login-back:hover {
+    color: var(--primary);
+}
+
+/* ── Card ── */
+.login-card {
+    padding: 40px 32px;
+}
+
+.login-logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 24px;
+}
+
+.logo-icon {
+    font-size: 1.5rem;
+}
+
+.login-title {
+    font-family: var(--font-display);
+    font-size: 1.6rem;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+
+.login-desc {
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    margin-bottom: 28px;
+    line-height: 1.5;
+}
+
+/* ── Form ── */
+.login-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.input-group label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-body);
+}
+
+.input-with-icon {
+    position: relative;
+}
+
+.input-icon {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+}
+
+.input-with-icon .input-field {
+    padding-left: 40px;
+}
+
+.login-btn {
+    width: 100%;
+    justify-content: center;
+    margin-top: 4px;
+}
+
+/* ── OTP ── */
+.otp-sent {
+    font-size: 0.82rem;
+    color: var(--text-body);
+    margin-bottom: 4px;
+}
+
+.otp-inputs {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+
+.otp-box {
+    width: 52px;
+    height: 52px;
+    text-align: center;
+    font-size: 1.3rem;
+    font-weight: 700;
+    font-family: var(--font-body);
+    color: var(--text-primary);
+    background: var(--bg-white);
+    border: 2px solid var(--border-hover);
+    border-radius: var(--radius-sm);
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.otp-box:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+.login-resend {
+    background: none;
+    border: none;
+    color: var(--primary);
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    padding: 4px 0;
+    align-self: center;
+}
+
+.login-resend:hover {
+    text-decoration: underline;
+}
+
+/* ── Error ── */
+.login-error {
+    color: var(--red);
+    font-size: 0.82rem;
+    font-weight: 500;
+    text-align: center;
+}
+
+/* ── Verifying ── */
+.login-verifying {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 32px 0;
+    color: var(--primary);
+}
+
+.login-verifying p {
+    color: var(--text-muted);
+    font-size: 0.88rem;
+}
+
+/* ── Footer ── */
+.login-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
