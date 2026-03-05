@@ -120,7 +120,26 @@ function _Detect_Language(_Text) {
         return _Is_Marathi ? 'mr' : 'hi';
     }
 
-    // 2) Keyword matching
+    // Bug #13: Check for Latin characters → likely English
+    const _Has_Latin = /[a-zA-Z]/.test(_Cleaned);
+    const _Has_Non_Latin_Script = [..._Cleaned].some(_Ch => {
+        const _Cp = _Ch.codePointAt(0);
+        return _Cp > 0x007F && _Cp !== 0x20; // non-ASCII, non-space
+    });
+
+    // If text is purely Latin characters → English
+    if (_Has_Latin && !_Has_Non_Latin_Script) {
+        // Still do keyword matching to see if it matches English or Romanized Hindi  
+        const _En_Keywords = _Detection_Keywords.en || [];
+        const _Hi_Keywords = _Detection_Keywords.hi || [];
+        const _En_Score = _En_Keywords.filter(_Kw => _Cleaned.includes(_Kw)).length;
+        const _Hi_Score = _Hi_Keywords.filter(_Kw => _Cleaned.includes(_Kw)).length;
+        // If English keywords match more, or no Hindi keywords found, return English
+        if (_En_Score >= _Hi_Score || _Hi_Score === 0) return 'en';
+        return 'hi'; // Romanized Hindi like "kaise ho"
+    }
+
+    // 2) Keyword matching (fallback)
     let _Best_Match = 'hi';
     let _Best_Score = 0;
 
@@ -214,56 +233,111 @@ const _Message_Templates = Object.freeze({
     ask_crop: {
         hi: '🌾 Kaun si fasal ka nuksan hua hai?\n\n1. Gehun (Wheat)\n2. Dhan (Rice)\n3. Kapas (Cotton)\n4. Ganna (Sugarcane)\n5. Soybean\n6. Dal (Pulses)',
         en: '🌾 Which crop was damaged?\n\n1. Wheat\n2. Rice\n3. Cotton\n4. Sugarcane\n5. Soybean\n6. Pulses',
+        mr: '🌾 कोणत्या पिकाचे नुकसान झाले?\n\n1. गहू\n2. भात\n3. कापूस\n4. ऊस\n5. सोयाबीन\n6. डाळ',
+        te: '🌾 ఏ పంటకు నష్టం జరిగింది?\n\n1. గోధుమ\n2. వరి\n3. పత్తి\n4. చెరకు\n5. సోయాబీన్\n6. పప్పు',
+        ta: '🌾 எந்த பயிருக்கு சேதம் ஏற்பட்டது?\n\n1. கோதுமை\n2. அரிசி\n3. பருத்தி\n4. கரும்பு\n5. சோயா\n6. பருப்பு',
+        gu: '🌾 કયા પાકને નુકસાન થયું?\n\n1. ઘઉં\n2. ડાંગર\n3. કપાસ\n4. શેરડી\n5. સોયાબીન\n6. દાળ',
+        kn: '🌾 ಯಾವ ಬೆಳೆಗೆ ಹಾನಿಯಾಗಿದೆ?\n\n1. ಗೋಧಿ\n2. ಅಕ್ಕಿ\n3. ಹತ್ತಿ\n4. ಕಬ್ಬು\n5. ಸೋಯಾಬೀನ್\n6. ಬೇಳೆ',
     },
 
     ask_date: {
         hi: '📅 Nuksan kab hua? Tarikh batayein ya bolein (jaise: "kal", "15 February", "pichle hafte"):',
         en: '📅 When did the damage occur? Tell me the date (like: "yesterday", "15 February", "last week"):',
+        mr: '📅 नुकसान कधी झाले? तारीख सांगा (उदा: "काल", "१५ फेब्रुवारी", "मागील आठवड्यात"):',
+        te: '📅 నష్టం ఎప్పుడు జరిగింది? తేదీ చెప్పండి (ఉదా: "నిన్న", "15 ఫిబ్రవరి"):',
+        ta: '📅 சேதம் எப்போது ஏற்பட்டது? தேதி சொல்லுங்கள் (உதா: "நேற்று", "15 பிப்ரவரி"):',
+        gu: '📅 નુકસાન ક્યારે થયું? તારીખ જણાવો (જેમ કે: "ગઈકાલે", "15 ફેબ્રુઆરી"):',
+        kn: '📅 ಹಾನಿ ಯಾವಾಗ ಆಯಿತು? ದಿನಾಂಕ ಹೇಳಿ (ಉದಾ: "ನಿನ್ನೆ", "15 ಫೆಬ್ರವರಿ"):',
     },
 
     ask_location: {
         hi: '📍 Kripya apni location share karein ya apne gaon ka naam batayein:',
         en: '📍 Please share your location or tell me your village name:',
+        mr: '📍 कृपया तुमचे स्थान शेअर करा किंवा गावाचे नाव सांगा:',
+        te: '📍 దయచేసి మీ లొకేషన్ షేర్ చేయండి లేదా మీ గ్రామం పేరు చెప్పండి:',
+        ta: '📍 உங்கள் இருப்பிடத்தைப் பகிரவும் அல்லது கிராமத்தின் பெயரைச் சொல்லுங்கள்:',
+        gu: '📍 તમારું લોકેશન શેર કરો અથવા ગામનું નામ જણાવો:',
+        kn: '📍 ನಿಮ್ಮ ಲೊಕೇಶನ್ ಹಂಚಿ ಅಥವಾ ಹಳ್ಳಿ ಹೆಸರು ಹೇಳಿ:',
     },
 
     ask_photos: {
-        hi: '📸 Ab kripya apne khet ki photos bhejein.\n\nKam se kam 3 photos chahiye:\n• Nuksan dikhe aise\n• Alag-alag angle se\n• Puri fasal bhi dikhe\n\nPhoto bhejein 👇',
-        en: '📸 Now please send photos of your field.\n\nMinimum 3 photos needed:\n• Show the damage clearly\n• Take from different angles\n• Include the full crop area\n\nSend photos 👇',
+        hi: '📸 Ab kripya apne khet ki photos bhejein.\n\nKam se kam 3 photos chahiye:\n• Nuksan dikhe aise\n• Alag-alag angle se\n• Puri fasal bhi dikhe\n\nPhoto bhejein 👇\n\n💡 "back" = peeche | "reset" = naya shuru',
+        en: '📸 Now please send photos of your field.\n\nMinimum 3 photos needed:\n• Show the damage clearly\n• Take from different angles\n• Include the full crop area\n\nSend photos 👇\n\n💡 "back" = go back | "reset" = start over',
+        mr: '📸 आता कृपया शेताचे फोटो पाठवा.\n\nकिमान 3 फोटो हवेत:\n• नुकसान स्पष्ट दिसले पाहिजे\n• वेगवेगळ्या कोनातून\n• पूर्ण पीक दिसले पाहिजे\n\nफोटो पाठवा 👇',
+        te: '📸 దయచేసి మీ పొలం ఫోటోలు పంపండి.\n\nకనీసం 3 ఫోటోలు కావాలి:\n• నష్టం స్పష్టంగా చూపించాలి\n• వేర్వేరు కోణాల నుండి\n• పూర్తి పంట ప్రదేశం చూపించాలి\n\nఫోటోలు పంపండి 👇',
+        ta: '📸 உங்கள் வயல் புகைப்படங்களை அனுப்புங்கள்.\n\nகுறைந்தது 3 புகைப்படங்கள் தேவை:\n• சேதம் தெளிவாக இருக்க வேண்டும்\n• வெவ்வேறு கோணங்களிலிருந்து\n• முழு பயிர் பரப்பும் இருக்க வேண்டும்\n\nபுகைப்படங்கள் அனுப்புங்கள் 👇',
+        gu: '📸 કૃપા કરી તમારા ખેતરના ફોટો મોકલો.\n\nઓછામાં ઓછા 3 ફોટો જોઈએ:\n• નુકસાન સ્પષ્ટ દેખાવું જોઈએ\n• જુદા જુદા ખૂણેથી\n• સંપૂર્ણ ખેતર દેખાવું જોઈએ\n\nફોટો મોકલો 👇',
+        kn: '📸 ದಯವಿಟ್ಟು ನಿಮ್ಮ ಹೊಲದ ಫೋಟೋಗಳನ್ನು ಕಳಿಸಿ.\n\nಕನಿಷ್ಠ 3 ಫೋಟೋಗಳು ಬೇಕು:\n• ಹಾನಿ ಸ್ಪಷ್ಟವಾಗಿ ಕಾಣಬೇಕು\n• ವಿವಿಧ ಕೋನಗಳಿಂದ\n• ಪೂರ್ಣ ಬೆಳೆ ಪ್ರದೇಶ ಕಾಣಬೇಕು\n\nಫೋಟೋಗಳನ್ನು ಕಳಿಸಿ 👇',
     },
 
     photo_approved: {
         hi: '✅ Photo #{index} accept ho gayi!\n\n🏷 Labels: {labels}\n📊 Quality: {score}/100\n\n{remaining} aur photos chahiye.',
         en: '✅ Photo #{index} approved!\n\n🏷 Labels: {labels}\n📊 Quality: {score}/100\n\n{remaining} more photos needed.',
+        mr: '✅ फोटो #{index} मंजूर!\n\n🏷 लेबल: {labels}\n📊 गुणवत्ता: {score}/100\n\n{remaining} आणखी फोटो हवेत.',
+        te: '✅ ఫోటో #{index} ఆమోదం!\n\n🏷 లేబుల్స్: {labels}\n📊 నాణ్యత: {score}/100\n\n{remaining} మరిన్ని ఫోటోలు కావాలి.',
+        ta: '✅ புகைப்படம் #{index} ஏற்றுக்கொள்ளப்பட்டது!\n\n🏷 லேபிள்கள்: {labels}\n📊 தரம்: {score}/100\n\n{remaining} மேலும் புகைப்படங்கள் தேவை.',
+        gu: '✅ ફોટો #{index} મંજૂર!\n\n🏷 લેબલ: {labels}\n📊 ગુણવત્તા: {score}/100\n\n{remaining} વધુ ફોટો જોઈએ.',
+        kn: '✅ ಫೋಟೋ #{index} ಅನುಮೋದಿಸಲಾಗಿದೆ!\n\n🏷 ಲೇಬಲ್: {labels}\n📊 ಗುಣಮಟ್ಟ: {score}/100\n\n{remaining} ಇನ್ನೂ ಫೋಟೋಗಳು ಬೇಕು.',
     },
 
     photo_rejected: {
         hi: '❌ Photo #{index} reject ho gayi.\nReason: {reason}\n\nKripya nayi photo bhejein.',
         en: '❌ Photo #{index} rejected.\nReason: {reason}\n\nPlease send a new photo.',
+        mr: '❌ फोटो #{index} नाकारला.\nकारण: {reason}\n\nकृपया नवीन फोटो पाठवा.',
+        te: '❌ ఫోటో #{index} తిరస్కరించబడింది.\nకారణం: {reason}\n\nదయచేసి కొత్త ఫోటో పంపండి.',
+        ta: '❌ புகைப்படம் #{index} நிராகரிக்கப்பட்டது.\nகாரணம்: {reason}\n\nபுதிய புகைப்படம் அனுப்புங்கள்.',
+        gu: '❌ ફોટો #{index} નામંજૂર.\nકારણ: {reason}\n\nકૃપા કરી નવો ફોટો મોકલો.',
+        kn: '❌ ಫೋಟೋ #{index} ತಿರಸ್ಕರಿಸಲಾಗಿದೆ.\nಕಾರಣ: {reason}\n\nದಯವಿಟ್ಟು ಹೊಸ ಫೋಟೋ ಕಳಿಸಿ.',
     },
 
     review_summary: {
         hi: '📋 Aapki claim ka summary:\n\n👤 Naam: {farmer_name}\n🏘 Gaon: {village}, {district}\n🌾 Fasal: {crop_type}\n📅 Nuksan: {loss_date}\n⚡ Karan: {cause}\n📐 Area: {area} hectares\n📷 Photos: {photo_count}\n\n✅ Sab sahi hai? "Haan" bolein ya type karein.',
         en: '📋 Your claim summary:\n\n👤 Name: {farmer_name}\n🏘 Village: {village}, {district}\n🌾 Crop: {crop_type}\n📅 Loss date: {loss_date}\n⚡ Cause: {cause}\n📐 Area: {area} hectares\n📷 Photos: {photo_count}\n\n✅ Is everything correct? Say "Yes" or type it.',
+        mr: '📋 तुमच्या दाव्याचा सारांश:\n\n👤 नाव: {farmer_name}\n🏘 गाव: {village}, {district}\n🌾 पीक: {crop_type}\n📅 नुकसान: {loss_date}\n⚡ कारण: {cause}\n📐 क्षेत्र: {area} हेक्टर\n📷 फोटो: {photo_count}\n\n✅ सर्व बरोबर आहे? "होय" म्हणा.',
+        te: '📋 మీ క్లెయిమ్ సారాంశం:\n\n👤 పేరు: {farmer_name}\n🏘 గ్రామం: {village}, {district}\n🌾 పంట: {crop_type}\n📅 నష్టం: {loss_date}\n⚡ కారణం: {cause}\n📐 విస్తీర్ణం: {area} హెక్టార్లు\n📷 ఫోటోలు: {photo_count}\n\n✅ అంతా సరైనదా? "అవును" అని చెప్పండి.',
+        ta: '📋 உங்கள் க்ளெய்ம் சுருக்கம்:\n\n👤 பெயர்: {farmer_name}\n🏘 கிராமம்: {village}, {district}\n🌾 பயிர்: {crop_type}\n📅 சேதம்: {loss_date}\n⚡ காரணம்: {cause}\n📐 பரப்பு: {area} ஹெக்டேர்\n📷 புகைப்படங்கள்: {photo_count}\n\n✅ எல்லாம் சரியா? "ஆமா" என்று சொல்லுங்கள்.',
+        gu: '📋 તમારા ક્લેમનો સારાંશ:\n\n👤 નામ: {farmer_name}\n🏘 ગામ: {village}, {district}\n🌾 પાક: {crop_type}\n📅 નુકસાન: {loss_date}\n⚡ કારણ: {cause}\n📐 ક્ષેત્ર: {area} હેક્ટર\n📷 ફોટો: {photo_count}\n\n✅ બધું બરાબર છે? "હા" કહો.',
+        kn: '📋 ನಿಮ್ಮ ಕ್ಲೇಮ್ ಸಾರಾಂಶ:\n\n👤 ಹೆಸರು: {farmer_name}\n🏘 ಹಳ್ಳಿ: {village}, {district}\n🌾 ಬೆಳೆ: {crop_type}\n📅 ಹಾನಿ: {loss_date}\n⚡ ಕಾರಣ: {cause}\n📐 ಪ್ರದೇಶ: {area} ಹೆಕ್ಟೇರ್\n📷 ಫೋಟೋ: {photo_count}\n\n✅ ಎಲ್ಲ ಸರಿಯಿದೆಯೇ? "ಹೌದು" ಎಂದು ಹೇಳಿ.',
     },
 
     claim_submitted: {
         hi: '🎉 Badhaai ho! Aapki claim {claim_id} successfully submit ho gayi hai!\n\n📄 Claim Pack PDF yahan se download karein:\n{pdf_url}\n\n⏰ Deadline: {deadline}\n\nHum aapko status updates bhejte rahenge.',
         en: '🎉 Congratulations! Your claim {claim_id} has been submitted!\n\n📄 Download your Claim Pack PDF:\n{pdf_url}\n\n⏰ Deadline: {deadline}\n\nWe\'ll keep you updated on the status.',
+        mr: '🎉 अभिनंदन! तुमचा दावा {claim_id} सबमिट झाला!\n\n📄 क्लेम पॅक PDF डाउनलोड करा:\n{pdf_url}\n\n⏰ मुदत: {deadline}\n\nआम्ही तुम्हाला अपडेट देत राहू.',
+        te: '🎉 అభినందనలు! మీ క్లెయిమ్ {claim_id} సమర్పించబడింది!\n\n📄 క్లెయిమ్ ప్యాక్ PDF డౌన్‌లోడ్ చేయండి:\n{pdf_url}\n\n⏰ గడువు: {deadline}\n\nస్టేటస్ అప్‌డేట్లు పంపుతూ ఉంటాము.',
+        ta: '🎉 வாழ்த்துக்கள்! உங்கள் க்ளெய்ம் {claim_id} சமர்ப்பிக்கப்பட்டது!\n\n📄 க்ளெய்ம் பேக் PDF பதிவிறக்கம் செய்யுங்கள்:\n{pdf_url}\n\n⏰ காலக்கெடு: {deadline}\n\nநிலை புதுப்பிப்புகளை அனுப்புவோம்.',
+        gu: '🎉 અભિનંદન! તમારો ક્લેમ {claim_id} સબમિટ થઈ ગયો!\n\n📄 ક્લેમ પેક PDF ડાઉનલોડ કરો:\n{pdf_url}\n\n⏰ ડેડલાઈન: {deadline}\n\nઅમે તમને સ્ટેટસ અપડેટ મોકલતા રહીશું.',
+        kn: '🎉 ಅಭಿನಂದನೆ! ನಿಮ್ಮ ಕ್ಲೇಮ್ {claim_id} ಸಲ್ಲಿಸಲಾಗಿದೆ!\n\n📄 ಕ್ಲೇಮ್ ಪ್ಯಾಕ್ PDF ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ:\n{pdf_url}\n\n⏰ ಗಡುವು: {deadline}\n\nಸ್ಥಿತಿ ಅಪ್‌ಡೇಟ್‌ಗಳನ್ನು ಕಳುಹಿಸುತ್ತೇವೆ.',
     },
 
     deadline_reminder: {
         hi: '⏰ Reminder: Aapki claim {claim_id} ki deadline {remaining} mein hai.\n\nAbhi submit karein — der na karein!',
         en: '⏰ Reminder: Your claim {claim_id} deadline is in {remaining}.\n\nSubmit now — don\'t delay!',
+        mr: '⏰ स्मरण: तुमच्या दाव्याची {claim_id} मुदत {remaining} मध्ये आहे.\n\nआताच सबमिट करा!',
+        te: '⏰ రిమైండర్: మీ క్లెయిమ్ {claim_id} గడువు {remaining} లో ఉంది.\n\nఇప్పుడే సమర్పించండి!',
+        ta: '⏰ நினைவூட்டல்: உங்கள் க்ளெய்ம் {claim_id} காலக்கெடு {remaining} இல் உள்ளது.\n\nஇப்போதே சமர்ப்பியுங்கள்!',
+        gu: '⏰ રિમાઇન્ડર: તમારા ક્લેમ {claim_id} ની ડેડલાઈન {remaining} માં છે.\n\nહવે જ સબમિટ કરો!',
+        kn: '⏰ ಜ್ಞಾಪನೆ: ನಿಮ್ಮ ಕ್ಲೇಮ್ {claim_id} ಗಡುವು {remaining} ಒಳಗೆ ಇದೆ.\n\nಈಗಲೇ ಸಲ್ಲಿಸಿ!',
     },
 
     appeal_prompt: {
         hi: '⚖️ Aapki claim reject ho gayi hai.\n\nKya aap appeal file karna chahte hain? Hum AI se ek professional appeal letter taiyaar karenge.\n\n"Haan" bolein appeal ke liye.',
         en: '⚖️ Your claim has been rejected.\n\nWould you like to file an appeal? We\'ll use AI to draft a professional appeal letter.\n\nSay "Yes" to start the appeal.',
+        mr: '⚖️ तुमचा दावा नाकारला गेला.\n\nतुम्हाला अपील दाखल करायची आहे का? AI ने व्यावसायिक अपील पत्र तयार करू.\n\n"होय" म्हणा.',
+        te: '⚖️ మీ క్లెయిమ్ తిరస్కరించబడింది.\n\nమీరు అప్పీల్ దాఖలు చేయాలనుకుంటున్నారా? AI తో ప్రొఫెషనల్ అప్పీల్ లెటర్ తయారు చేస్తాము.\n\n"అవును" అని చెప్పండి.',
+        ta: '⚖️ உங்கள் க்ளெய்ம் நிராகரிக்கப்பட்டது.\n\nமேல்முறையீடு செய்ய விரும்புகிறீர்களா? AI மூலம் தொழில்முறை கடிதம் தயாரிப்போம்.\n\n"ஆமா" என்று சொல்லுங்கள்.',
+        gu: '⚖️ તમારો ક્લેમ નામંજૂર થયો.\n\nશું તમે અપીલ કરવા માગો છો? AI થી પ્રોફેશનલ અપીલ લેટર બનાવીશું.\n\n"હા" કહો.',
+        kn: '⚖️ ನಿಮ್ಮ ಕ್ಲೇಮ್ ತಿರಸ್ಕರಿಸಲಾಗಿದೆ.\n\nಮೇಲ್ಮನವಿ ಸಲ್ಲಿಸಲು ಬಯಸುತ್ತೀರಾ? AI ನಿಂದ ವೃತ್ತಿಪರ ಮೇಲ್ಮನವಿ ಪತ್ರ ತಯಾರಿಸುತ್ತೇವೆ.\n\n"ಹೌದು" ಎಂದು ಹೇಳಿ.',
     },
 
     helper_consent: {
         hi: '🤝 Helper mode shuru karne ke liye, kisan ko OTP verify karna hoga.\n\nKisan ke phone par OTP bheja gaya hai.',
         en: '🤝 To start Helper mode, the farmer needs to verify via OTP.\n\nOTP has been sent to the farmer\'s phone.',
+        mr: '🤝 हेल्पर मोड सुरू करण्यासाठी, शेतकऱ्याला OTP ने सत्यापन करणे आवश्यक आहे.',
+        te: '🤝 హెల్పర్ మోడ్ ప్రారంభించడానికి, రైతు OTP ద్వారా ధృవీకరించాలి.',
+        ta: '🤝 ஹெல்பர் மோடு தொடங்க, விவசாயி OTP மூலம் சரிபார்க்க வேண்டும்.',
+        gu: '🤝 હેલ્પર મોડ શરૂ કરવા, ખેડૂતે OTP દ્વારા ચકાસણી કરવી પડશે.',
+        kn: '🤝 ಹೆಲ್ಪರ್ ಮೋಡ್ ಪ್ರಾರಂಭಿಸಲು, ರೈತ OTP ಮೂಲಕ ಪರಿಶೀಲಿಸಬೇಕು.',
     },
 
     error_message: {
@@ -279,6 +353,11 @@ const _Message_Templates = Object.freeze({
     thank_you: {
         hi: '🙏 Dhanyavaad! BimaSathi use karne ke liye shukriya.\nKabhi bhi madad chahiye to "hi" type karein.',
         en: '🙏 Thank you for using BimaSathi!\nType "hi" anytime you need help.',
+        mr: '🙏 धन्यवाद! BimaSathi वापरल्याबद्दल आभार.\nकधीही मदत हवी असल्यास "hi" टाइप करा.',
+        te: '🙏 ధన్యవాదాలు! BimaSathi వాడినందుకు కృతజ్ఞతలు.\nసహాయం కావాలంటే "hi" టైప్ చేయండి.',
+        ta: '🙏 நன்றி! BimaSathi பயன்படுத்தியதற்கு நன்றி.\nஉதவி தேவைப்படும்போது "hi" டைப் செய்யுங்கள்.',
+        gu: '🙏 આભાર! BimaSathi વાપરવા બદલ ધન્યવાદ.\nમદદ જોઈએ ત્યારે "hi" ટાઈપ કરો.',
+        kn: '🙏 ಧನ್ಯವಾದ! BimaSathi ಬಳಸಿದ್ದಕ್ಕೆ ಕೃತಜ್ಞತೆ.\nಸಹಾಯ ಬೇಕಾದಾಗ "hi" ಟೈಪ್ ಮಾಡಿ.',
     },
 });
 

@@ -54,7 +54,9 @@
     margin-left: auto;
     width: 28px;
     height: 28px;
-    border-radius: var(--radius-xs);
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg-soft);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -63,8 +65,9 @@
 }
 
 .sidebar-collapse-btn:hover {
-    background: var(--bg-soft);
+    background: var(--border-hover);
     color: var(--text-primary);
+    border-color: var(--border-hover);
 }
 
 .sidebar-close-btn {

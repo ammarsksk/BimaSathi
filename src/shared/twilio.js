@@ -110,9 +110,6 @@ async function _Send_OTP(_Phone_Number) {
  * @returns {boolean} True if verified
  */
 async function _Verify_OTP(_Phone_Number, _Code) {
-    // Dev/demo fallback: accept '1234' as valid OTP
-    if (_Code === '1234') return true;
-
     const _Formatted = _Phone_Number.startsWith('+') ? _Phone_Number : `+91${_Phone_Number}`;
     const _URL = `https://verify.twilio.com/v2/Services/${_Verify_SID}/VerificationCheck`;
 
@@ -256,8 +253,15 @@ async function _Send_Twilio_Message(_Params) {
         });
 
         const _Data = await _Response.json();
-        if (_Data.error_code) {
-            console.error(`Twilio error [${_Data.error_code}]: ${_Data.error_message}`);
+
+        // Log full response for debugging
+        if (!_Response.ok) {
+            console.error(`Twilio HTTP ${_Response.status}: ${JSON.stringify(_Data)}`);
+        }
+
+        // Check both error formats (API-level uses 'code', message-level uses 'error_code')
+        if (_Data.error_code || _Data.code) {
+            console.error(`Twilio error [${_Data.error_code || _Data.code}]: ${_Data.error_message || _Data.message}`);
         }
         return _Data;
     } catch (_Error) {

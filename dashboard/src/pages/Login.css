@@ -57,7 +57,7 @@
     position: relative;
     z-index: 1;
     width: 100%;
-    max-width: 420px;
+    max-width: 480px;
     padding: 0 20px;
 }
 
@@ -155,15 +155,15 @@
 
 .otp-inputs {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     justify-content: center;
 }
 
 .otp-box {
-    width: 52px;
-    height: 52px;
+    width: 44px;
+    height: 48px;
     text-align: center;
-    font-size: 1.3rem;
+    font-size: 1.2rem;
     font-weight: 700;
     font-family: var(--font-body);
     color: var(--text-primary);

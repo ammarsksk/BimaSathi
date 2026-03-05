@@ -1,0 +1,9 @@
+# Ignore dashboard frontend (not needed in Lambda)
+dashboard/
+.aws-sam/
+.git/
+.gitignore
+.env
+samconfig.toml
+stack-events.json
+*.md

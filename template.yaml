@@ -17,7 +17,7 @@ Globals:
         AUDIT_LOG_TABLE: !Ref AuditLogTable
         CONSENT_TABLE: !Ref ConsentTable
         EVIDENCE_BUCKET: !Ref EvidenceBucket
-        BEDROCK_MODEL_ID: anthropic.claude-3-sonnet-20240229-v1:0
+        BEDROCK_MODEL_ID: us.amazon.nova-pro-v1:0
         BEDROCK_REGION: us-east-1
         COGNITO_USER_POOL_ID: !Ref UserPool
         COGNITO_CLIENT_ID: !Ref UserPoolClient
@@ -80,7 +80,7 @@ Resources:
         - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
         - Statement:
             - Effect: Allow
-              Action: ['bedrock:InvokeModel']
+              Action: ['bedrock:InvokeModel', 'bedrock:Converse']
               Resource: '*'
             - Effect: Allow
               Action: ['rekognition:DetectLabels', 'rekognition:DetectModerationLabels']
@@ -91,6 +91,9 @@ Resources:
             - Effect: Allow
               Action: ['polly:SynthesizeSpeech']
               Resource: '*'
+            - Effect: Allow
+              Action: ['lambda:InvokeFunction']
+              Resource: '*'
 
   ConversationEngineFunction:
     Type: AWS::Serverless::Function
@@ -99,6 +102,26 @@ Resources:
       Handler: src/lambdas/conversation-engine/index.handler
       Timeout: 300
       MemorySize: 1024
+      Environment:
+        Variables:
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          TWILIO_WHATSAPP_NUMBER: !Ref TwilioWhatsAppNumber
+          TWILIO_VERIFY_SERVICE_SID: !Ref TwilioVerifyServiceSid
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref UsersTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref ConversationsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref DeadlinesTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
+        - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
+        - Statement:
+            - Effect: Allow
+              Action: ['bedrock:InvokeModel', 'bedrock:Converse']
+              Resource: '*'
+            - Effect: Allow
+              Action: ['lambda:InvokeFunction']
+              Resource: '*'
 
   AuthFunction:
     Type: AWS::Serverless::Function
@@ -130,6 +153,18 @@ Resources:
       Handler: src/lambdas/voice-processor/index.handler
       Timeout: 120
       MemorySize: 1024
+      Environment:
+        Variables:
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          TWILIO_WHATSAPP_NUMBER: !Ref TwilioWhatsAppNumber
+      Policies:
+        - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
+        - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - Statement:
+            - Effect: Allow
+              Action: ['transcribe:StartTranscriptionJob', 'transcribe:GetTranscriptionJob']
+              Resource: '*'
 
   PhotoProcessorFunction:
     Type: AWS::Serverless::Function
@@ -138,6 +173,17 @@ Resources:
       Handler: src/lambdas/photo-processor/index.handler
       Timeout: 60
       MemorySize: 1024
+      Environment:
+        Variables:
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+      Policies:
+        - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
+        - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - Statement:
+            - Effect: Allow
+              Action: ['rekognition:DetectLabels', 'rekognition:DetectModerationLabels']
+              Resource: '*'
 
   ClaimGeneratorFunction:
     Type: AWS::Serverless::Function
@@ -145,6 +191,14 @@ Resources:
       FunctionName: bimasathi-claim-generator
       Handler: src/lambdas/claim-generator/index.handler
       MemorySize: 1024
+      Policies:
+        - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
+        - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref UsersTable }
+        - Statement:
+            - Effect: Allow
+              Action: ['bedrock:InvokeModel', 'bedrock:Converse']
+              Resource: '*'
 
   DeadlineTriggerFunction:
     Type: AWS::Serverless::Function
@@ -174,12 +228,22 @@ Resources:
           Properties:
             Schedule: rate(24 hours)
             Enabled: true
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref DeadlinesTable }
 
   AppealGeneratorFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: bimasathi-appeal-generator
       Handler: src/lambdas/appeal-generator/index.handler
+      Policies:
+        - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
+        - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - Statement:
+            - Effect: Allow
+              Action: ['bedrock:InvokeModel', 'bedrock:Converse']
+              Resource: '*'
 
   OperatorApiFunction:
     Type: AWS::Serverless::Function

@@ -26,7 +26,7 @@ export default function Login() {
 
     const handleVerifyOTP = async (e) => {
         e.preventDefault()
-        if (otp.length < 4) { setError('Enter the 4-digit OTP'); return }
+        if (otp.length < 6) { setError('Enter the 6-digit OTP'); return }
         setError('')
         setStep('verifying')
         try {
@@ -87,7 +87,7 @@ export default function Login() {
                             <div className="input-group">
                                 <label>Enter OTP</label>
                                 <div className="otp-inputs">
-                                    {[0, 1, 2, 3].map(i => (
+                                    {[0, 1, 2, 3, 4, 5].map(i => (
                                         <input
                                             key={i}
                                             type="text"

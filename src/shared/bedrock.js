@@ -10,20 +10,21 @@
  *   - Conversational response generation
  */
 
-const { BedrockRuntimeClient, InvokeModelCommand } = require('@aws-sdk/client-bedrock-runtime');
+const { BedrockRuntimeClient, ConverseCommand } = require('@aws-sdk/client-bedrock-runtime');
 
 const _Bedrock_Region = process.env.BEDROCK_REGION || 'us-east-1';
-const _Model_Id = process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-sonnet-20240229-v1:0';
+const _Model_Id = process.env.BEDROCK_MODEL_ID || 'us.amazon.nova-pro-v1:0';
+const _Fallback_Model_Id = 'us.amazon.nova-lite-v1:0';
 const _Bedrock_Client = new BedrockRuntimeClient({ region: _Bedrock_Region });
 
 
 // ═════════════════════════════════════════════════════════════
-//  CORE INVOCATION
+//  CORE INVOCATION — Bedrock Converse API (works with any model)
 // ═════════════════════════════════════════════════════════════
 
 /**
- * Invoke Amazon Bedrock with a system prompt and user message
- * Returns the raw text response from the model
+ * Invoke Amazon Bedrock via the Converse API
+ * Works with any supported model (Nova, Claude, etc.)
  *
  * @param {string} _System_Prompt — system-level instruction
  * @param {string} _User_Message — user's input
@@ -31,29 +32,23 @@ const _Bedrock_Client = new BedrockRuntimeClient({ region: _Bedrock_Region });
  * @returns {string} Model response text
  */
 async function _Invoke_Model(_System_Prompt, _User_Message, _Max_Tokens = 1024) {
-    const _Request_Body = JSON.stringify({
-        anthropic_version: 'bedrock-2023-05-31',
-        max_tokens: _Max_Tokens,
-        system: _System_Prompt,
-        messages: [{ role: 'user', content: _User_Message }],
-        temperature: 0.3,
-    });
-
     try {
-        const _Response = await _Bedrock_Client.send(new InvokeModelCommand({
+        const _Response = await _Bedrock_Client.send(new ConverseCommand({
             modelId: _Model_Id,
-            body: _Request_Body,
-            contentType: 'application/json',
-            accept: 'application/json',
+            system: [{ text: _System_Prompt }],
+            messages: [{ role: 'user', content: [{ text: _User_Message }] }],
+            inferenceConfig: { maxTokens: _Max_Tokens, temperature: 0.3 },
         }));
 
-        const _Response_Body = JSON.parse(new TextDecoder().decode(_Response.body));
-        return _Response_Body.content?.[0]?.text || '';
+        return _Response.output?.message?.content?.[0]?.text || '';
     } catch (_Error) {
         console.error('Bedrock invocation failed:', _Error.message);
 
-        // Retry with fallback model if primary model unavailable
-        if (_Error.name === 'ModelNotReadyException' || _Error.name === 'ThrottlingException') {
+        // Retry with fallback model for any model-related error
+        if (_Error.name === 'ModelNotReadyException' || _Error.name === 'ThrottlingException'
+            || _Error.message?.includes('inference profile')
+            || _Error.message?.includes('on-demand throughput')
+            || _Error.message?.includes('not supported')) {
             return _Invoke_Fallback(_System_Prompt, _User_Message, _Max_Tokens);
         }
         throw _Error;
@@ -61,27 +56,17 @@ async function _Invoke_Model(_System_Prompt, _User_Message, _Max_Tokens = 1024) 
 }
 
 /**
- * Fallback model invocation (Claude 3 Haiku — cheaper, faster)
+ * Fallback model invocation (Nova Lite — faster, cheaper)
  */
 async function _Invoke_Fallback(_System_Prompt, _User_Message, _Max_Tokens) {
-    const _Fallback_Model = 'anthropic.claude-3-haiku-20240307-v1:0';
-    const _Request_Body = JSON.stringify({
-        anthropic_version: 'bedrock-2023-05-31',
-        max_tokens: _Max_Tokens,
-        system: _System_Prompt,
-        messages: [{ role: 'user', content: _User_Message }],
-        temperature: 0.3,
-    });
-
-    const _Response = await _Bedrock_Client.send(new InvokeModelCommand({
-        modelId: _Fallback_Model,
-        body: _Request_Body,
-        contentType: 'application/json',
-        accept: 'application/json',
+    const _Response = await _Bedrock_Client.send(new ConverseCommand({
+        modelId: _Fallback_Model_Id,
+        system: [{ text: _System_Prompt }],
+        messages: [{ role: 'user', content: [{ text: _User_Message }] }],
+        inferenceConfig: { maxTokens: _Max_Tokens, temperature: 0.3 },
     }));
 
-    const _Response_Body = JSON.parse(new TextDecoder().decode(_Response.body));
-    return _Response_Body.content?.[0]?.text || '';
+    return _Response.output?.message?.content?.[0]?.text || '';
 }
 
 
@@ -331,6 +316,58 @@ function _Build_Fallback_Appeal(_Claim) {
 }
 
 
+// ═════════════════════════════════════════════════════════════
+//  AI-POWERED OPTION ROUTING — replaces all keyword matching
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * Interpret what the farmer wants based on current state and available actions.
+ * This is the core AI routing function — every message goes through here.
+ *
+ * @param {string} _State — current conversation state name
+ * @param {string} _User_Text — what the farmer typed/said
+ * @param {Array} _Available_Actions — [{ key, description }]
+ * @param {string} _Language — farmer's language code
+ * @returns {Object} { action: string, data: string|null }
+ */
+async function _Interpret_Message(_State, _User_Text, _Available_Actions, _Language = 'hi') {
+    const _Actions_List = _Available_Actions.map(a => `- ${a.key}: ${a.description}`).join('\n');
+
+    const _System = `You are BimaSathi's conversation router for Indian crop insurance.
+
+Current state: ${_State}
+Farmer's language: ${_Language}
+
+Available actions:
+${_Actions_List}
+
+The farmer sent a message. Determine which action they want.
+Consider:
+- They may type a number (1, 2, 3) matching an option
+- They may describe what they want in Hindi, Hinglish, English, Marathi, Telugu, Tamil, Gujarati, or Kannada
+- They may use slang, misspellings, abbreviations, or informal language
+- They may be providing free-form data (name, village, crop type, date, etc.)
+- If providing data, use action DATA_INPUT and extract the data
+
+Return ONLY valid JSON — no markdown, no explanation:
+{"action": "<ACTION_KEY>", "data": "<extracted data or null>"}`;
+
+    try {
+        const _Result = await _Invoke_Model(_System, _User_Text, 100);
+        // Strip any markdown fencing if present
+        const _Clean = _Result.trim().replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+        const _Parsed = JSON.parse(_Clean);
+        return {
+            action: (_Parsed.action || 'UNKNOWN').toUpperCase(),
+            data: _Parsed.data || _Parsed.extracted_data || null,
+        };
+    } catch (_Err) {
+        console.error('_Interpret_Message parse error:', _Err.message);
+        return { action: 'UNKNOWN', data: null };
+    }
+}
+
+
 // ─────────────────────────────────────────────────────────────
 //  Exports
 // ─────────────────────────────────────────────────────────────
@@ -338,6 +375,7 @@ module.exports = {
     _Invoke_Model,
     _System_Prompts,
     _Detect_Intent,
+    _Interpret_Message,
     _Extract_Claim_Data,
     _Generate_Claim_Summary,
     _Generate_Appeal_Letter,

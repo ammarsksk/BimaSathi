@@ -34,6 +34,7 @@ exports.handler = async (_Event) => {
     const _From = _Event.from;
     const _Body = _Event.body || '';
     const _Msg_Type = _Event.type || 'text';
+    const _Msg_Sid = _Event.message_sid || '';
 
     console.log(`Engine invoked: from=${_From}, type=${_Msg_Type}, body="${_Body.substring(0, 80)}"`);
 
@@ -51,6 +52,25 @@ exports.handler = async (_Event) => {
             };
         }
 
+        // ── Bug #14 Layer 2: Message SID deduplication ──
+        const _Recent_Sids = _Session.context?._recentSids || [];
+        if (_Msg_Sid && _Recent_Sids.includes(_Msg_Sid)) {
+            console.log(`Skipping duplicate message: ${_Msg_Sid}`);
+            return;
+        }
+
+        // ── Bug #14 Layer 3: Response throttle (5 seconds) ──
+        const _Last_Reply_At = _Session.context?._lastReplyAt || 0;
+        const _Now = Date.now();
+        const _Throttle_Ms = 5000;
+        if (_Now - _Last_Reply_At < _Throttle_Ms && _Msg_Type === 'text') {
+            console.log('Throttled: too soon since last reply');
+            // Still track the SID even if throttled
+            _Session.context._recentSids = [..._Recent_Sids, _Msg_Sid].filter(Boolean).slice(-15);
+            await _DB._Upsert_Conversation(_Session);
+            return;
+        }
+
         // ── Handle voice messages — transcribe first, then proceed ──
         let _Text_Input = _Body;
         if (_Msg_Type === 'voice' && _Event.media_data?.url) {
@@ -62,13 +82,132 @@ exports.handler = async (_Event) => {
         }
 
         // ── Detect intent via Bedrock ──
-        const _Intent = await _Bedrock._Detect_Intent(_Text_Input);
+        let _Intent = await _Bedrock._Detect_Intent(_Text_Input);
+        const _Lower_Text = (_Text_Input || '').trim().toLowerCase();
+
+        // ── Error #6: Local fallback when Bedrock returns UNKNOWN ──
+        if (_Intent === 'UNKNOWN') {
+            if (['hi', 'hello', 'hey', 'namaste', 'namaskar', 'hola'].some(_W => _Lower_Text.includes(_W))) _Intent = 'GREETING';
+            else if (['haan', 'ha', 'yes', 'ok', 'sahi', 'correct', 'theek', 'ho'].some(_W => _Lower_Text === _W)) _Intent = 'CONFIRM';
+            else if (['nahi', 'no', 'galat', 'wrong', 'nako'].some(_W => _Lower_Text === _W)) _Intent = 'DENY';
+            else if (['menu', 'main menu'].some(_W => _Lower_Text.includes(_W))) _Intent = 'MENU';
+            else if (['help', 'madad', 'sahayata'].some(_W => _Lower_Text.includes(_W))) _Intent = 'HELP';
+            else if (['language', 'bhasha', 'bhasa'].some(_W => _Lower_Text.includes(_W))) _Intent = 'LANGUAGE_CHANGE';
+        }
         console.log(`Intent: ${_Intent}, Current state: ${_Session.state}`);
 
+        // ── Feature #1: Free navigation commands (work in ANY state) ──
+        // RESET — complete fresh start
+        if (_Lower_Text.includes('reset') || _Lower_Text.includes('naya shuru') || _Lower_Text.includes('shuru se')
+            || _Lower_Text.includes('start over')) {
+            _Session.state = _States.WELCOME;
+            _Session.context = { _recentSids: [_Msg_Sid], _lastReplyAt: _Now };
+            const _Msg = _Session.language === 'en'
+                ? '🔄 Starting fresh! All progress has been cleared.'
+                : '🔄 Naya shuru! Sab kuch reset ho gaya.';
+            await _Twilio._Send_Text_Message(_From, _Msg);
+            // Run welcome handler to show language prompt
+            const _Welcome_Result = await _State_Handlers[_States.WELCOME]({ from: _From, language: _Session.language });
+            for (const _M of _Welcome_Result.messages || []) {
+                await _Twilio._Send_Text_Message(_From, _M.body);
+            }
+            await _DB._Upsert_Conversation(_Session);
+            return;
+        }
+
+        // BACK — go to previous state
+        if (_Lower_Text.includes('back') || _Lower_Text.includes('peeche') || _Lower_Text.includes('wapas')
+            || _Lower_Text.includes('galti ho gayi')) {
+            const _History = _Session.context._stateHistory || [];
+            if (_History.length > 0) {
+                const _Prev = _History.pop();
+                _Session.state = _Prev.state;
+                _Session.context.intake = _Prev.intake;
+                _Session.context._stateHistory = _History;
+                _Session.context._recentSids = [..._Recent_Sids, _Msg_Sid].filter(Boolean).slice(-15);
+                _Session.context._lastReplyAt = _Now;
+                const _Msg = _Session.language === 'en'
+                    ? '⬅️ Going back. Please re-enter:'
+                    : '⬅️ Peeche ja rahe hain. Dobara batayein:';
+                await _Twilio._Send_Text_Message(_From, _Msg);
+                // Show the restored state's prompt (but don't re-run handler for MAIN_MENU)
+                if (_Session.state === _States.MAIN_MENU) {
+                    await _Twilio._Send_Text_Message(_From, _Lang._Get_Template('main_menu', _Session.language));
+                } else {
+                    const _Restored_Handler = _State_Handlers[_Session.state];
+                    if (_Restored_Handler) {
+                        const _Prompt_Result = await _Restored_Handler({
+                            from: _From, text: '', body: '', intent: 'UNKNOWN', type: 'text',
+                            event: _Event, session: _Session, context: _Session.context, language: _Session.language,
+                        });
+                        for (const _M of _Prompt_Result.messages || []) {
+                            await _Twilio._Send_Text_Message(_From, _M.body);
+                        }
+                    }
+                }
+                await _DB._Upsert_Conversation(_Session);
+                return;
+            } else {
+                const _Msg = _Session.language === 'en'
+                    ? '⚠️ Nothing to go back to. Type "reset" to start over.'
+                    : '⚠️ Peeche jaane ko kuch nahi. "reset" type karein naye shuru ke liye.';
+                await _Twilio._Send_Text_Message(_From, _Msg);
+                _Session.context._recentSids = [..._Recent_Sids, _Msg_Sid].filter(Boolean).slice(-15);
+                _Session.context._lastReplyAt = _Now;
+                await _DB._Upsert_Conversation(_Session);
+                return;
+            }
+        }
+
+        // SKIP — skip current optional field
+        if (_Lower_Text.includes('skip') || _Lower_Text.includes('chhodo') || _Lower_Text.includes('baad mein')) {
+            // Define skippable states and what comes next
+            const _Skip_Map = {
+                [_States.LOSS_REPORT]: _States.CROP_DETAILS,
+                [_States.CROP_DETAILS]: _States.DATE_LOCATION,
+                [_States.DATE_LOCATION]: _States.PHOTO_EVIDENCE,
+            };
+            const _Next = _Skip_Map[_Session.state];
+            if (_Next) {
+                _Session.context._stateHistory = _Session.context._stateHistory || [];
+                _Session.context._stateHistory.push({
+                    state: _Session.state,
+                    intake: _Session.context.intake ? { ..._Session.context.intake } : {},
+                });
+                _Session.state = _Next;
+                _Session.context._recentSids = [..._Recent_Sids, _Msg_Sid].filter(Boolean).slice(-15);
+                _Session.context._lastReplyAt = _Now;
+                const _Msg = _Session.language === 'en'
+                    ? '⏭️ Skipped. Moving to next step.'
+                    : '⏭️ Chhod diya. Agle step par chalte hain.';
+                await _Twilio._Send_Text_Message(_From, _Msg);
+                await _DB._Upsert_Conversation(_Session);
+                return;
+            } else {
+                const _Msg = _Session.language === 'en'
+                    ? '⚠️ This step cannot be skipped.'
+                    : '⚠️ Ye step chhod nahi sakte.';
+                await _Twilio._Send_Text_Message(_From, _Msg);
+                _Session.context._recentSids = [..._Recent_Sids, _Msg_Sid].filter(Boolean).slice(-15);
+                _Session.context._lastReplyAt = _Now;
+                await _DB._Upsert_Conversation(_Session);
+                return;
+            }
+        }
+
         // ── Global intent overrides (work in any state) ──
+        // Bug #8: GREETING resets stale sessions
+        if (_Intent === 'GREETING' && _Session.state !== _States.WELCOME && _Session.state !== _States.LANGUAGE_SELECT) {
+            _Session.state = _States.WELCOME;
+            _Session.context = { _recentSids: [_Msg_Sid], _lastReplyAt: _Now };
+        }
         if (_Intent === 'MENU') _Session.state = _States.MAIN_MENU;
         if (_Intent === 'LANGUAGE_CHANGE') _Session.state = _States.LANGUAGE_SELECT;
         if (_Intent === 'HELP') _Session.state = _States.OPERATOR_BRIDGE;
+
+        // ── Push state history (for "back" navigation) ──
+        const _Pre_Handler_State = _Session.state;
+        if (!_Session.context._stateHistory) _Session.context._stateHistory = [];
 
         // ── Execute current state's handler ──
         const _Handler = _State_Handlers[_Session.state];
@@ -90,18 +229,37 @@ exports.handler = async (_Event) => {
         });
 
         // ── Apply handler result ──
-        if (_Result.next_state) _Session.state = _Result.next_state;
+        if (_Result.next_state && _Result.next_state !== _Pre_Handler_State) {
+            // Push history snapshot before state change
+            _Session.context._stateHistory.push({
+                state: _Pre_Handler_State,
+                intake: _Session.context.intake ? { ..._Session.context.intake } : {},
+            });
+            _Session.context._stateHistory = _Session.context._stateHistory.slice(-10);
+            _Session.state = _Result.next_state;
+        }
         if (_Result.context) _Session.context = { ..._Session.context, ..._Result.context };
         if (_Result.language) _Session.language = _Result.language;
 
+        // Track dedup + throttle
+        _Session.context._recentSids = [...(_Session.context._recentSids || []), _Msg_Sid].filter(Boolean).slice(-15);
+        _Session.context._lastReplyAt = _Now;
+
         // ── Send response message(s) ──
+        console.log(`Handler returned ${(_Result.messages || []).length} message(s), next_state=${_Result.next_state || 'same'}`);
         for (const _Msg of _Result.messages || []) {
-            if (_Msg.type === 'buttons') {
-                await _Twilio._Send_Button_Message(_From, _Msg.body, _Msg.buttons);
-            } else if (_Msg.type === 'media' && _Msg.media_url) {
-                await _Twilio._Send_Media_Message(_From, _Msg.media_url, _Msg.body);
-            } else {
-                await _Twilio._Send_Text_Message(_From, _Msg.body);
+            try {
+                if (_Msg.type === 'buttons') {
+                    await _Twilio._Send_Button_Message(_From, _Msg.body, _Msg.buttons);
+                } else if (_Msg.type === 'media' && _Msg.media_url) {
+                    await _Twilio._Send_Media_Message(_From, _Msg.media_url, _Msg.body);
+                } else {
+                    console.log(`Sending message to ${_From}: "${(_Msg.body || '').substring(0, 60)}..."`);
+                    const _Send_Result = await _Twilio._Send_Text_Message(_From, _Msg.body);
+                    console.log(`Twilio send result: sid=${_Send_Result?.sid || 'none'}, error=${_Send_Result?.error_code || 'none'}`);
+                }
+            } catch (_Send_Err) {
+                console.error(`Failed to send message: ${_Send_Err.message}`);
             }
         }
 
@@ -109,10 +267,12 @@ exports.handler = async (_Event) => {
         await _DB._Upsert_Conversation(_Session);
 
     } catch (_Error) {
-        console.error('Conversation engine error:', _Error);
+        console.error('Conversation engine error:', _Error.message, _Error.stack);
         try {
             await _Twilio._Send_Text_Message(_From, _Lang._Get_Template('error_message', 'hi'));
-        } catch (_E) { /* suppress */ }
+        } catch (_E) {
+            console.error('Even error message send failed:', _E.message);
+        }
     }
 };
 
@@ -134,10 +294,27 @@ const _State_Handlers = {
     },
 
     // ── LANGUAGE_SELECT: User picks a language → set it → move to auth ──
-    [_States.LANGUAGE_SELECT]: async ({ text, from }) => {
+    [_States.LANGUAGE_SELECT]: async ({ text, from, language }) => {
         const _Lang_Map = { '1': 'hi', '2': 'mr', '3': 'te', '4': 'ta', '5': 'gu', '6': 'kn', '7': 'en' };
         let _Selected = _Lang_Map[text.trim()];
 
+        // If not a number, ask AI what language they want
+        if (!_Selected) {
+            const _Route = await _Bedrock._Interpret_Message('LANGUAGE_SELECT', text, [
+                { key: 'HI', description: 'Hindi (हिंदी)' },
+                { key: 'MR', description: 'Marathi (मराठी)' },
+                { key: 'TE', description: 'Telugu (తెలుగు)' },
+                { key: 'TA', description: 'Tamil (தமிழ்)' },
+                { key: 'GU', description: 'Gujarati (ગુજરાતી)' },
+                { key: 'KN', description: 'Kannada (ಕನ್ನಡ)' },
+                { key: 'EN', description: 'English' },
+            ], language);
+            if (_Route.action !== 'UNKNOWN') {
+                _Selected = _Route.action.toLowerCase();
+            }
+        }
+
+        // Fallback: try script-based detection
         if (!_Selected) {
             _Selected = _Lang._Detect_Language(text);
         }
@@ -184,25 +361,51 @@ const _State_Handlers = {
         };
     },
 
-    // ── MAIN_MENU: Route based on intent ──
+    // ── MAIN_MENU: AI-powered routing — farmer says anything, AI picks the option ──
     [_States.MAIN_MENU]: async ({ text, intent, language }) => {
         const _Choice = text.trim();
 
-        if (_Choice === '1' || intent === 'FILE_CLAIM') {
+        // Fast-path: number shortcuts (no AI call needed)
+        if (_Choice === '1') {
             return {
                 messages: [{ body: _Lang._Get_Template('loss_report_start', language) }],
                 next_state: _States.LOSS_REPORT,
                 context: { claimId: _Constants._Generate_Claim_Id(), intake: {}, currentField: 'farmer_name' },
             };
         }
-        if (_Choice === '2' || intent === 'CHECK_STATUS') {
+        if (_Choice === '2') {
             return { messages: [{ body: language === 'en' ? '📊 Fetching your claims...' : '📊 Aapki claims dekh rahe hain...' }], next_state: _States.TRACK_STATUS };
         }
-        if (_Choice === '3' || intent === 'HELP') {
+        if (_Choice === '3') {
             return { messages: [{ body: language === 'en' ? '📞 Connecting to operator...' : '📞 Operator se connect kar rahe hain...' }], next_state: _States.OPERATOR_BRIDGE };
         }
 
-        return { messages: [{ body: _Lang._Get_Template('main_menu', language) }] };
+        // AI-powered routing: ask Bedrock what the farmer wants
+        const _Route = await _Bedrock._Interpret_Message('MAIN_MENU', text, [
+            { key: 'FILE_CLAIM', description: 'Start filing a new crop insurance claim (nayi claim, bima, dava)' },
+            { key: 'CHECK_STATUS', description: 'Check/track status of existing claims (status, track, sthiti, dekho)' },
+            { key: 'GET_HELP', description: 'Get help, talk to operator, ask questions (madad, help, sahayata)' },
+        ], language);
+
+        if (_Route.action === 'FILE_CLAIM') {
+            return {
+                messages: [{ body: _Lang._Get_Template('loss_report_start', language) }],
+                next_state: _States.LOSS_REPORT,
+                context: { claimId: _Constants._Generate_Claim_Id(), intake: {}, currentField: 'farmer_name' },
+            };
+        }
+        if (_Route.action === 'CHECK_STATUS') {
+            return { messages: [{ body: language === 'en' ? '📊 Fetching your claims...' : '📊 Aapki claims dekh rahe hain...' }], next_state: _States.TRACK_STATUS };
+        }
+        if (_Route.action === 'GET_HELP') {
+            return { messages: [{ body: language === 'en' ? '📞 Connecting to operator...' : '📞 Operator se connect kar rahe hain...' }], next_state: _States.OPERATOR_BRIDGE };
+        }
+
+        // Truly unrecognized
+        const _Hint = language === 'en'
+            ? '❓ I didn\'t understand. You can say:\n• "File a claim" or "new claim"\n• "Check status" or "track"\n• "Help" or "madad"\n\nOr type 1, 2, or 3.'
+            : '❓ Samajh nahi aaya. Aap bol sakte hain:\n• "Nayi claim" ya "bima"\n• "Status dekho" ya "track"\n• "Madad" ya "help"\n\nYa 1, 2, ya 3 type karein.';
+        return { messages: [{ body: _Hint }] };
     },
 
     // ── LOSS_REPORT: Collect farmer details (1 field at a time) ──
@@ -237,24 +440,35 @@ const _State_Handlers = {
         };
     },
 
-    // ── CROP_DETAILS: Collect crop type, season, cause ──
+    // ── CROP_DETAILS: AI-powered crop, cause, and area collection ──
     [_States.CROP_DETAILS]: async ({ text, context, language }) => {
         const _Intake = context.intake || {};
         const _Step = context.cropStep || 'crop_type';
 
         if (_Step === 'crop_type') {
-            const _Crop_Map = { '1': 'wheat', '2': 'rice', '3': 'cotton', '4': 'sugarcane', '5': 'soybean', '6': 'pulses' };
-            _Intake.crop_type = _Crop_Map[text.trim()] || text.trim().toLowerCase();
+            // AI interprets crop name from any language
+            const _Route = await _Bedrock._Interpret_Message('CROP_DETAILS_TYPE', text, [
+                { key: 'DATA_INPUT', description: 'Farmer is telling their crop type (wheat/gehun, rice/dhan, cotton/kapas, sugarcane/ganna, soybean, pulses/dal, maize/makka, groundnut/mungfali, mustard/sarson, or any other crop)' },
+            ], language);
+            _Intake.crop_type = _Route.data || text.trim().toLowerCase();
 
             const _Cause_Prompt = language === 'en'
-                ? '⚡ What caused the damage?\n\n1. Flood\n2. Drought\n3. Hail\n4. Unseasonal Rain\n5. Pest/Disease\n6. Fire\n7. Other'
-                : '⚡ Nuksan ka karan kya hai?\n\n1. Baadh\n2. Sukha\n3. Ole\n4. Beseasonal Baarish\n5. Keet/Rog\n6. Aag\n7. Aur';
+                ? '⚡ What caused the damage?\n\n1. Flood\n2. Drought\n3. Hail\n4. Unseasonal Rain\n5. Pest/Disease\n6. Fire\n7. Other\n\nOr just describe it in your own words.'
+                : '⚡ Nuksan ka karan kya hai?\n\n1. Baadh\n2. Sukha\n3. Ole\n4. Beseasonal Baarish\n5. Keet/Rog\n6. Aag\n7. Aur\n\nYa apne shabdon mein batayein.';
             return { messages: [{ body: _Cause_Prompt }], context: { intake: _Intake, cropStep: 'cause' } };
         }
 
         if (_Step === 'cause') {
             const _Cause_Map = { '1': 'flood', '2': 'drought', '3': 'hail', '4': 'unseasonal_rain', '5': 'pest', '6': 'fire', '7': 'other' };
-            _Intake.cause = _Cause_Map[text.trim()] || text.trim().toLowerCase();
+            if (_Cause_Map[text.trim()]) {
+                _Intake.cause = _Cause_Map[text.trim()];
+            } else {
+                // AI interprets damage cause from free text
+                const _Route = await _Bedrock._Interpret_Message('CROP_DETAILS_CAUSE', text, [
+                    { key: 'DATA_INPUT', description: 'Farmer is describing the cause of crop damage (flood/baadh, drought/sukha, hail/ole, unseasonal_rain/baarish, pest/keet, disease/rog, fire/aag, cyclone/toofan, frost/pala, landslide, or other)' },
+                ], language);
+                _Intake.cause = _Route.data || text.trim().toLowerCase();
+            }
 
             const _Area_Prompt = language === 'en'
                 ? '📐 How many hectares (or bigha) of crop were affected?'
@@ -339,41 +553,67 @@ const _State_Handlers = {
     // ── PHOTO_EVIDENCE: Collect and AI-verify photos ──
     [_States.PHOTO_EVIDENCE]: async ({ type, event, context, language }) => {
         if (type !== 'image') {
-            return { messages: [{ body: _Lang._Get_Template('ask_photos', language) }] };
+            const _Approved = context.approvedPhotos || 0;
+            const _Needed = _Constants._Photo_Config.MIN_PHOTOS_REQUIRED - _Approved;
+            const _Prompt = language === 'en'
+                ? `📸 Please send a photo of your damaged crop.\n\nProgress: ${_Approved}/3 approved. ${_Needed} more needed.`
+                : `📸 Kripya apne khet ki photo bhejein.\n\nProgress: ${_Approved}/3 accept. Aur ${_Needed} chahiye.`;
+            return { messages: [{ body: _Prompt }] };
         }
 
-        const _Photo_Count = (context.photoCount || 0) + 1;
+        // Deduplication: skip if we've already processed this message
+        const _Msg_Sid = event.message_sid;
+        if (_Msg_Sid && context._processedSids?.includes(_Msg_Sid)) {
+            return { messages: [] };
+        }
+
         const _Claim_Id = context.claimId;
+        const _Total_Sent = (context.totalPhotosSent || 0) + 1;
 
         // Invoke photo processor
         const _Photo_Result = await _Invoke_Photo_Processor(event.media_data, _Claim_Id, {
-            photoCount: context.photoCount || 0,
+            photoCount: _Total_Sent - 1,
             claimData: { gpsCoords: context.intake?.gps_coords, lossDate: context.intake?.loss_date },
         });
 
-        const _Approved_Count = context.approvedPhotos + (_Photo_Result.approved ? 1 : 0);
+        const _Approved_Count = (context.approvedPhotos || 0) + (_Photo_Result.approved ? 1 : 0);
         const _Remaining = Math.max(0, _Constants._Photo_Config.MIN_PHOTOS_REQUIRED - _Approved_Count);
 
-        // Build response
+        // Track processed message SIDs
+        const _Processed_Sids = [...(context._processedSids || []), _Msg_Sid].filter(Boolean).slice(-10);
+
+        // Build response — describe outcome, show progress
         let _Response_Msg;
         if (_Photo_Result.approved) {
-            _Response_Msg = _Lang._Fill_Template(_Lang._Get_Template('photo_approved', language), {
-                index: _Photo_Count,
-                labels: _Photo_Result.labels?.slice(0, 3).map(_L => _L.name).join(', ') || 'N/A',
-                score: _Photo_Result.quality_score || 0,
-                remaining: _Remaining,
-            });
+            const _Labels = _Photo_Result.labels?.slice(0, 3).map(_L => _L.name).join(', ') || '';
+            if (language === 'en') {
+                _Response_Msg = `✅ Photo accepted!${_Labels ? `\nDetected: ${_Labels}` : ''}\nQuality: ${_Photo_Result.quality_score || 70}/100\n\n📊 Progress: ${_Approved_Count}/3 approved.${_Remaining > 0 ? ` Send ${_Remaining} more.` : ''}`;
+            } else {
+                _Response_Msg = `✅ Photo accept ho gayi!${_Labels ? `\nPata chala: ${_Labels}` : ''}\nQuality: ${_Photo_Result.quality_score || 70}/100\n\n📊 Progress: ${_Approved_Count}/3 accept hui.${_Remaining > 0 ? ` Aur ${_Remaining} bhejein.` : ''}`;
+            }
         } else {
-            _Response_Msg = _Lang._Fill_Template(_Lang._Get_Template('photo_rejected', language), {
-                index: _Photo_Count,
-                reason: _Photo_Result.fail_reason || 'Unknown',
-            });
+            const _Reason = _Photo_Result.fail_reason || 'Unknown error';
+            // Show rejection reason in native language
+            let _Local_Reason = _Reason;
+            if (language !== 'en') {
+                const _Reason_Map = {
+                    'Internal processing error': 'Photo process nahi ho payi. Dobara bhejein.',
+                    'Image resolution too low. Min: 640×480': 'Photo chhoti hai. Kam se kam 640×480 honi chahiye.',
+                    'Image flagged by content moderation': 'Photo mein galat content hai. Sirf khet ki photo bhejein.',
+                };
+                _Local_Reason = _Reason_Map[_Reason] || _Reason;
+            }
+            if (language === 'en') {
+                _Response_Msg = `❌ Photo rejected.\nReason: ${_Reason}\n\n📊 Progress: ${_Approved_Count}/3 approved. Send another photo.`;
+            } else {
+                _Response_Msg = `❌ Photo reject ho gayi.\nWajah: ${_Local_Reason}\n\n📊 Progress: ${_Approved_Count}/3 accept hui. Nayi photo bhejein.`;
+            }
         }
 
         // Check if enough photos collected
         if (_Remaining === 0) {
             await _DB._Update_Claim(_Claim_Id, context.userId, {
-                photoCount: _Photo_Count,
+                photoCount: _Total_Sent,
                 approvedPhotoCount: _Approved_Count,
             });
 
@@ -381,26 +621,47 @@ const _State_Handlers = {
             return {
                 messages: [{ body: _Response_Msg }, { body: _Summary || _Lang._Get_Template('review_summary', language) }],
                 next_state: _States.REVIEW_CONFIRM,
-                context: { photoCount: _Photo_Count, approvedPhotos: _Approved_Count },
+                context: { totalPhotosSent: _Total_Sent, approvedPhotos: _Approved_Count, _processedSids: _Processed_Sids },
             };
         }
 
         return {
             messages: [{ body: _Response_Msg }],
-            context: { photoCount: _Photo_Count, approvedPhotos: _Approved_Count },
+            context: { totalPhotosSent: _Total_Sent, approvedPhotos: _Approved_Count, _processedSids: _Processed_Sids },
         };
     },
 
-    // ── REVIEW_CONFIRM: Farmer confirms or corrects ──
+    // ── REVIEW_CONFIRM: AI-powered confirm/deny/edit ──
     [_States.REVIEW_CONFIRM]: async ({ intent, text, context, language }) => {
-        if (intent === 'CONFIRM' || ['haan', 'ha', 'yes', 'ok', 'sahi', '1'].includes(text.trim().toLowerCase())) {
+        // Handle the actual correction value if we're waiting for one
+        if (context._correctionField) {
+            const _Intake = context.intake || {};
+            _Intake[context._correctionField] = text.trim();
+            // Re-generate summary
+            const _Summary = await _Bedrock._Generate_Claim_Summary(_Intake, language);
+            return {
+                messages: [
+                    { body: language === 'en' ? `✅ Updated ${context._correctionField.replace(/_/g, ' ')}.` : `✅ ${context._correctionField.replace(/_/g, ' ')} update ho gaya.` },
+                    { body: _Summary || _Lang._Get_Template('review_summary', language) },
+                ],
+                context: { intake: _Intake, _correctionField: null, _awaitingCorrection: false },
+            };
+        }
+
+        // AI-powered: ask Bedrock what the farmer wants
+        const _Route = await _Bedrock._Interpret_Message('REVIEW_CONFIRM', text, [
+            { key: 'CONFIRM', description: 'Farmer confirms the summary is correct (haan, ha, yes, ok, sahi, theek hai, correct, submit)' },
+            { key: 'DENY', description: 'Farmer says something is wrong and wants to see correction options (nahi, no, galat, wrong)' },
+            { key: 'EDIT_FIELD', description: 'Farmer wants to change a specific field (naam badlo, change name, gaon badlo, fasal badlo, crop change, area change, date change, karan badlo). Extract the field name and new value if provided.' },
+        ], language);
+
+        if (_Route.action === 'CONFIRM') {
             // Trigger claim generation pipeline
             const _Claim_Id = context.claimId;
             const _Intake = context.intake || {};
 
             await _DB._Update_Claim(_Claim_Id, context.userId, { status: _Constants._Claim_Status.SUBMITTED });
 
-            // Invoke claim generator asynchronously
             const _Gen_Result = await _Invoke_Claim_Generator(_Claim_Id, {
                 ..._Intake,
                 claimId: _Claim_Id,
@@ -424,13 +685,84 @@ const _State_Handlers = {
             };
         }
 
-        if (intent === 'DENY') {
+        if (_Route.action === 'DENY') {
             return {
-                messages: [{ body: language === 'en' ? '✏️ What would you like to correct? Tell me and I\'ll update it.' : '✏️ Kya badalna hai? Batayein, main update karunga.' }],
+                messages: [{ body: language === 'en' ? '✏️ What would you like to correct? Just tell me in your own words.\n\nFor example: "change my name to Ramesh" or "village galat hai"' : '✏️ Kya badalna hai? Apne shabdon mein batayein.\n\nJaise: "naam Ramesh karo" ya "gaon galat hai"' }],
+                context: { _awaitingCorrection: true },
             };
         }
 
-        return { messages: [{ body: language === 'en' ? 'Please confirm "Yes" or say what to correct.' : '"Haan" bolein ya kya badalna hai batayein.' }] };
+        if (_Route.action === 'EDIT_FIELD') {
+            // AI extracted field info — try to map it
+            const _Field_Map = {
+                'name': 'farmer_name', 'naam': 'farmer_name', 'farmer_name': 'farmer_name',
+                'village': 'village', 'gaon': 'village',
+                'district': 'district', 'zila': 'district',
+                'crop': 'crop_type', 'fasal': 'crop_type', 'crop_type': 'crop_type',
+                'cause': 'cause', 'karan': 'cause',
+                'area': 'area_hectares', 'hectare': 'area_hectares', 'bigha': 'area_hectares', 'area_hectares': 'area_hectares',
+                'date': 'loss_date', 'tarikh': 'loss_date', 'loss_date': 'loss_date',
+            };
+
+            const _Data = (_Route.data || '').toLowerCase();
+            let _Target_Field = null;
+            for (const [_Key, _Val] of Object.entries(_Field_Map)) {
+                if (_Data.includes(_Key)) { _Target_Field = _Val; break; }
+            }
+
+            if (_Target_Field) {
+                const _Prompt = language === 'en'
+                    ? `📝 Please enter the new ${_Target_Field.replace(/_/g, ' ')}:`
+                    : `📝 Naya ${_Target_Field.replace(/_/g, ' ')} batayein:`;
+                return {
+                    messages: [{ body: _Prompt }],
+                    context: { _awaitingCorrection: false, _correctionField: _Target_Field },
+                };
+            }
+            // If AI couldn't determine, ask more specifically
+            return {
+                messages: [{ body: language === 'en' ? '❓ Which field do you want to change? Say "name", "village", "crop", "cause", "area", or "date".' : '❓ Kaun sa field badalna hai? "naam", "gaon", "fasal", "karan", "area", ya "tarikh" bolein.' }],
+                context: { _awaitingCorrection: true },
+            };
+        }
+
+        // If awaiting correction from a previous DENY
+        if (context._awaitingCorrection) {
+            // Re-route through AI to figure out what field they mean
+            const _Edit_Route = await _Bedrock._Interpret_Message('REVIEW_EDIT', text, [
+                { key: 'EDIT_FIELD', description: 'Farmer is specifying which field to change (naam/name, gaon/village, fasal/crop, karan/cause, area, tarikh/date). Extract the field name.' },
+            ], language);
+
+            const _Field_Map = {
+                'name': 'farmer_name', 'naam': 'farmer_name', 'farmer_name': 'farmer_name',
+                'village': 'village', 'gaon': 'village',
+                'district': 'district', 'zila': 'district',
+                'crop': 'crop_type', 'fasal': 'crop_type', 'crop_type': 'crop_type',
+                'cause': 'cause', 'karan': 'cause',
+                'area': 'area_hectares', 'hectare': 'area_hectares', 'area_hectares': 'area_hectares',
+                'date': 'loss_date', 'tarikh': 'loss_date', 'loss_date': 'loss_date',
+            };
+            const _Data = (_Edit_Route.data || '').toLowerCase();
+            let _Target_Field = null;
+            for (const [_Key, _Val] of Object.entries(_Field_Map)) {
+                if (_Data.includes(_Key)) { _Target_Field = _Val; break; }
+            }
+
+            if (_Target_Field) {
+                const _Prompt = language === 'en'
+                    ? `📝 Please enter the new ${_Target_Field.replace(/_/g, ' ')}:`
+                    : `📝 Naya ${_Target_Field.replace(/_/g, ' ')} batayein:`;
+                return {
+                    messages: [{ body: _Prompt }],
+                    context: { _awaitingCorrection: false, _correctionField: _Target_Field },
+                };
+            }
+            return {
+                messages: [{ body: language === 'en' ? '❓ I couldn\'t identify the field. Say "name", "village", "crop", "cause", "area", or "date".' : '❓ Samajh nahi aaya. "naam", "gaon", "fasal", "karan", "area", ya "tarikh" bolein.' }],
+            };
+        }
+
+        return { messages: [{ body: language === 'en' ? 'Please confirm "Yes" or tell me what to change.' : '"Haan" bolein ya kya badalna hai batayein.' }] };
     },
 
     // ── TRACK_STATUS: Show claim statuses ──
@@ -478,11 +810,62 @@ const _State_Handlers = {
     },
 
     // ── HELPER_MODE: Helper acting on behalf of farmer ──
-    [_States.HELPER_MODE]: async ({ text, context, language }) => {
+    [_States.HELPER_MODE]: async ({ text, from, context, language }) => {
+        // Step 1: Ask for farmer's phone number
+        if (!context._helperFarmerPhone) {
+            const _Input = text.trim().replace(/\s/g, '');
+            // Check if text looks like a phone number (10+ digits)
+            const _Phone_Match = _Input.match(/(\+?\d{10,13})/);
+            if (_Phone_Match) {
+                const _Farmer_Phone = _Phone_Match[1].startsWith('+') ? _Phone_Match[1] : `+91${_Phone_Match[1]}`;
+                // Send OTP to farmer's phone
+                try {
+                    await _Twilio._Send_OTP(_Farmer_Phone);
+                    const _Msg = language === 'en'
+                        ? `📱 OTP sent to farmer's phone (${_Farmer_Phone}).\n\nAsk the farmer to read the OTP and type it here:`
+                        : `📱 Kisan ke phone (${_Farmer_Phone}) par OTP bheja gaya hai.\n\nKisan se OTP sunein aur yahan type karein:`;
+                    return {
+                        messages: [{ body: _Msg }],
+                        context: { _helperFarmerPhone: _Farmer_Phone, helperMode: true, helperPhone: from },
+                    };
+                } catch (_Err) {
+                    return {
+                        messages: [{ body: language === 'en' ? '❌ Could not send OTP. Please check the phone number.' : '❌ OTP nahi bhej paye. Phone number check karein.' }],
+                    };
+                }
+            }
+            // No phone number yet, ask for it
+            const _Ask = language === 'en'
+                ? '🤝 Helper Mode\n\nPlease enter the farmer\'s phone number (10 digits):'
+                : '🤝 Helper Mode\n\nKisan ka phone number batayein (10 digit):';
+            return { messages: [{ body: _Ask }] };
+        }
+
+        // Step 2: Verify OTP from farmer's phone
+        const _Farmer_Phone = context._helperFarmerPhone;
+        const _Is_Valid = await _Twilio._Verify_OTP(_Farmer_Phone, text.trim());
+        if (!_Is_Valid) {
+            return {
+                messages: [{ body: language === 'en' ? '❌ Wrong OTP. Ask the farmer again.' : '❌ Galat OTP. Kisan se dobara sunein.' }],
+            };
+        }
+
+        // Record consent
+        await _DB._Log_Audit({
+            claimId: 'HELPER_CONSENT',
+            actor: from,
+            action: 'helper_consent_verified',
+            metadata: { farmerPhone: _Farmer_Phone, helperPhone: from },
+        });
+
+        const _Success = language === 'en'
+            ? `✅ Consent verified! You are now filing on behalf of ${_Farmer_Phone}.\n\nAll claim data will be linked to the farmer's account.`
+            : `✅ Sahmati mil gayi! Ab aap ${_Farmer_Phone} ki taraf se claim file kar rahe hain.\n\nSaari jaankari kisan ke khate se judi rahegi.`;
+
         return {
-            messages: [{ body: _Lang._Get_Template('helper_consent', language) }],
-            next_state: _States.AUTH_OTP,
-            context: { helperMode: true },
+            messages: [{ body: _Success }, { body: _Lang._Get_Template('main_menu', language) }],
+            next_state: _States.MAIN_MENU,
+            context: { helperMode: true, helperPhone: from, userId: _Farmer_Phone, _helperFarmerPhone: null },
         };
     },
 

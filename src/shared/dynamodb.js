@@ -123,10 +123,9 @@ async function _Get_Claim_By_Id(_Claim_Id) {
  * @returns {Array} List of claim records
  */
 async function _Get_Claims_By_User(_User_Id) {
-    const _Result = await _Doc_Client.send(new QueryCommand({
+    const _Result = await _Doc_Client.send(new ScanCommand({
         TableName: _Table_Names.CLAIMS,
-        IndexName: 'statusIndex',
-        KeyConditionExpression: 'userId = :uid',
+        FilterExpression: 'userId = :uid',
         ExpressionAttributeValues: { ':uid': _User_Id },
     }));
     return _Result.Items || [];

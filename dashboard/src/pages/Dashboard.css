@@ -41,7 +41,7 @@
 }
 
 .kpi-urgent::after {
-    display: none;
+    background: var(--red);
 }
 
 .kpi-icon {

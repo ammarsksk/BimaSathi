@@ -39,26 +39,15 @@ export function AuthProvider({ children }) {
     }, [])
 
     const verifyOtp = useCallback(async (phoneNumber, code) => {
-        try {
-            const result = await api.verifyOtp(phoneNumber, code)
-            if (result.tokens?.AccessToken) {
-                sessionStorage.setItem('bms_token', result.tokens.AccessToken)
-            }
-            const usr = result.user || { phoneNumber, role: 'operator', name: 'Operator' }
-            sessionStorage.setItem('bms_user', JSON.stringify(usr))
-            setUser(usr)
-            setIsAuthenticated(true)
-            return { success: true, user: usr }
-        } catch (err) {
-            // Demo mode: accept any 4-digit code
-            console.warn('Verify API unavailable, using demo login:', err.message)
-            const demoUser = { userId: 'demo', phoneNumber, role: 'operator', name: 'Demo Operator', language: 'en' }
-            sessionStorage.setItem('bms_token', `demo-${Date.now()}`)
-            sessionStorage.setItem('bms_user', JSON.stringify(demoUser))
-            setUser(demoUser)
-            setIsAuthenticated(true)
-            return { success: true, user: demoUser, demo: true }
+        const result = await api.verifyOtp(phoneNumber, code)
+        if (result.tokens?.AccessToken) {
+            sessionStorage.setItem('bms_token', result.tokens.AccessToken)
         }
+        const usr = result.user || { phoneNumber, role: 'operator', name: 'Operator' }
+        sessionStorage.setItem('bms_user', JSON.stringify(usr))
+        setUser(usr)
+        setIsAuthenticated(true)
+        return { success: true, user: usr }
     }, [])
 
     const logout = useCallback(() => {
