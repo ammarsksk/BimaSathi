@@ -111,6 +111,7 @@ Resources:
           DOCUMENT_INTAKE_FUNCTION: !Ref DocumentIntakeFunction
           FORM_SCHEMA_EXTRACTOR_FUNCTION: !Ref FormSchemaExtractorFunction
           AUTO_FILL_FUNCTION: !Ref AutoFillFunction
+          FACE_VERIFICATION_FUNCTION: !Ref FaceVerificationFunction
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref UsersTable }
         - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
@@ -315,6 +316,21 @@ Resources:
         - Statement:
             - Effect: Allow
               Action: ['bedrock:InvokeModel', 'bedrock:Converse']
+              Resource: '*'
+
+  FaceVerificationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-face-verification
+      Handler: faceVerification/index.handler
+      CodeUri: faceVerification/
+      Timeout: 30
+      MemorySize: 512
+      Policies:
+        - S3ReadPolicy: { BucketName: !Ref EvidenceBucket }
+        - Statement:
+            - Effect: Allow
+              Action: ['rekognition:CompareFaces']
               Resource: '*'
 
   OperatorApiFunction:

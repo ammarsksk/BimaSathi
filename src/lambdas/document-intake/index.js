@@ -105,12 +105,26 @@ exports.handler = async (_Event) => {
             sizeBytes: _Buffer.length,
         });
 
-        // ── Step 9: Audit log ──
+        // ── Step 9: Name Matching (for AADHAAR_OR_ID) ──
+        let _Name_Match = { success: false, score: 0 };
+        if (_Classification === _Document_Types.AADHAAR_OR_ID) {
+            const _Provided_Name = _Event.context?.intake?.farmer_name || "";
+            if (_Provided_Name) {
+                _Name_Match = await _Match_Name_AI(_Provided_Name, _Extracted_Text);
+            }
+        }
+
+        // ── Step 10: Audit log ──
         await _DB._Log_Audit({
             claimId: _Claim_Id,
             actor: _User_Id,
             action: 'document_received',
-            metadata: { classification: _Classification, s3Key: _S3_Key, keyValueCount: _Key_Values.length },
+            metadata: {
+                classification: _Classification,
+                s3Key: _S3_Key,
+                keyValueCount: _Key_Values.length,
+                nameMatch: _Name_Match
+            },
         });
 
         return {
@@ -122,6 +136,7 @@ exports.handler = async (_Event) => {
                 extractedText: _Extracted_Text,
                 keyValues: _Key_Values,
                 documentIndex: _Doc_Index,
+                nameMatch: _Name_Match
             }),
         };
 
@@ -156,6 +171,42 @@ async function _Check_Content_Moderation(_Buffer) {
     } catch (_Error) {
         console.error('Content moderation check failed:', _Error.message);
         return { flagged: false, labels: [] };
+    }
+}
+
+/**
+ * Perform fuzzy name matching using Bedrock
+ * @param {string} _Provided - Name provided by the user
+ * @param {string} _Extracted - Text extracted from the ID
+ * @returns {Promise<{ success: boolean, score: number, reason: string }>}
+ */
+async function _Match_Name_AI(_Provided, _Extracted) {
+    const _Bedrock = require('../../shared/bedrock');
+    const _Prompt = `You are an identity verification assistant.
+Compare the name provided by a user with the text extracted from their government ID card.
+User provided name: "${_Provided}"
+Extracted text from ID: "${_Extracted}"
+
+Determine if the names match, considering variations in spelling, middle names, or titles.
+Return a JSON object:
+{
+  "match": boolean,
+  "score": number (0-100),
+  "reason": "brief explanation"
+}
+Return ONLY the JSON.`;
+
+    try {
+        const _Response = await _Bedrock._Invoke_Model(_Prompt, "", 150);
+        const _Result = JSON.parse(_Response.trim());
+        return {
+            success: _Result.match || _Result.score >= 80,
+            score: _Result.score,
+            reason: _Result.reason
+        };
+    } catch (_Error) {
+        console.error('Name matching AI failed:', _Error.message);
+        return { success: false, score: 0, reason: 'AI matching error' };
     }
 }
 

@@ -963,9 +963,27 @@ const _State_Handlers = {
         };
 
         const _Type_Label = _Type_Labels[_Doc_Result.classification] || _Type_Labels.UNKNOWN;
-        const _Confirm = language === 'en'
-            ? `✅ ${_Type_Label} received and processed!\n\n📊 Extracted ${_Doc_Result.keyValues?.length || 0} data fields.\n\nSend more documents or type "done" to continue.`
-            : `✅ ${_Type_Label} mil gaya aur process ho gaya!\n\n📊 ${_Doc_Result.keyValues?.length || 0} data fields nikale.\n\nAur documents bhejein ya "done" type karein aage badhne ke liye.`;
+        let _Confirm = language === 'en'
+            ? `✅ ${_Type_Label} received and processed!\n\n📊 Extracted ${_Doc_Result.keyValues?.length || 0} data fields.`
+            : `✅ ${_Type_Label} mil gaya aur process ho gaya!\n\n📊 ${_Doc_Result.keyValues?.length || 0} data fields nikale.`;
+
+        // Name match feedback
+        if (_Doc_Result.classification === 'AADHAAR_OR_ID') {
+            const _Match = _Doc_Result.nameMatch || {};
+            if (_Match.success) {
+                _Confirm += language === 'en'
+                    ? `\n\n🆔 Identity confirmed! Name matches your records.`
+                    : `\n\n🆔 Pehchan ki pushti ho gayi! Naam aapke record se mel khata hai.`;
+            } else {
+                _Confirm += language === 'en'
+                    ? `\n\n⚠️ Name mismatch: ${_Match.reason || "Name on ID does not match provided name."}`
+                    : `\n\n⚠️ Naam mel nahi khaya: ${_Match.reason || "ID par naam aapke bataye naam se alag hai."}`;
+            }
+        }
+
+        _Confirm += language === 'en'
+            ? `\n\nSend more documents or type "done" to continue.`
+            : `\n\nAur documents bhejein ya "done" type karein aage badhne ke liye.`;
 
         const _Doc_Count = (context.documentCount || 0) + 1;
 
@@ -975,10 +993,62 @@ const _State_Handlers = {
         // Trigger auto-fill in background
         await _Invoke_Auto_Fill(_Claim_Id, context.userId);
 
+        // Transition logic: If ID card uploaded, force selfie next for face verification
+        if (_Doc_Result.classification === 'AADHAAR_OR_ID') {
+            const _Selfie_Prompt = language === 'en'
+                ? `🤳 Now, please send a clear selfie for face verification to match with your ID.`
+                : `🤳 Ab, apni ek saaf selfie bhejein taaki aapki ID se milaya ja sake.`;
+            return {
+                messages: [{ body: _Confirm }, { body: _Selfie_Prompt }],
+                next_state: _States.IDENTITY_VERIFICATION,
+                context: { documentCount: _Doc_Count, idS3Key: _Doc_Result.s3Key },
+            };
+        }
+
         return {
             messages: [{ body: _Confirm }],
             context: { documentCount: _Doc_Count },
         };
+    },
+
+    // ── IDENTITY_VERIFICATION: Match selfie with ID ──
+    [_States.IDENTITY_VERIFICATION]: async ({ type, event, context, language, from }) => {
+        if (type !== 'image') {
+            const _Prompt = language === 'en'
+                ? '🤳 Please send a selfie image to complete identity verification.'
+                : '🤳 Kripya identity verify karne ke liye apni ek selfie bhejein.';
+            return { messages: [{ body: _Prompt }] };
+        }
+
+        const _Claim_Id = context.claimId;
+        const _ID_Key = context.idS3Key;
+
+        // 1. Download and Upload Selfie to S3
+        const { buffer: _Buffer, contentType: _Content_Type } = await _Twilio._Download_Media(event.media_data.url);
+        const _Selfie_Key = `claims/${_Claim_Id}/documents/selfie_${Date.now()}.jpg`;
+        const _S3 = require('../../shared/s3');
+        await _S3._Upload_Document(_Claim_Id, `selfie.jpg`, _Buffer);
+
+        // 2. Invoke Face Verification
+        const _Verify_Result = await _Invoke_Face_Verification(_ID_Key, _Selfie_Key);
+
+        if (_Verify_Result.isMatch) {
+            const _Success = language === 'en'
+                ? `✅ Face Match Successful! (Similarity: ${_Verify_Result.similarity}%)\nIdentity verified. Let's continue.`
+                : `✅ Face Match ho gaya! (Samanata: ${_Verify_Result.similarity}%)\nPehchan ki pushti ho gayi. Aage badhte hain.`;
+
+            return {
+                messages: [{ body: _Success }, { body: language === 'en' ? '📝 Now, let\'s collect the remaining details.' : '📝 Ab baaki jaankari le lete hain.' }],
+                next_state: _States.SCHEMA_COLLECTION,
+                context: { selfieVerified: true, selfieS3Key: _Selfie_Key },
+            };
+        } else {
+            const _Fail = language === 'en'
+                ? `❌ Face Match Failed (Similarity: ${_Verify_Result.similarity}%). The selfie does not match the person on the ID.\n\nPlease try sending another clear selfie or type "help" to talk to an operator.`
+                : `❌ Face Match nahi hua (Samanata: ${_Verify_Result.similarity}%). Selfie ID waale vyakti se mel nahi kha rahi.\n\nKripya dusri saaf selfie bhejein ya "help" type karein operator se baat karne ke liye.`;
+
+            return { messages: [{ body: _Fail }] };
+        }
     },
 
     // ── SCHEMA_COLLECTION: Dynamic schema-driven field collection ──
@@ -1268,5 +1338,23 @@ async function _Invoke_Auto_Fill(_Claim_Id, _User_Id) {
         }));
     } catch (_Err) {
         console.error('Auto-fill invocation failed:', _Err);
+    }
+}
+
+async function _Invoke_Face_Verification(_Source_Key, _Target_Key) {
+    try {
+        const _Response = await _Lambda_Client.send(new InvokeCommand({
+            FunctionName: process.env.FACE_VERIFICATION_FUNCTION || 'bimasathi-face-verification',
+            Payload: Buffer.from(JSON.stringify({
+                sourceBucket: process.env.EVIDENCE_BUCKET,
+                sourceKey: _Source_Key,
+                targetKey: _Target_Key,
+            })),
+        }));
+        const _Result = JSON.parse(new TextDecoder().decode(_Response.Payload));
+        return typeof _Result.body === 'string' ? JSON.parse(_Result.body) : _Result;
+    } catch (_Err) {
+        console.error('Face verification invocation failed:', _Err);
+        return { isMatch: false, similarity: 0 };
     }
 }
