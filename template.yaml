@@ -108,6 +108,9 @@ Resources:
           TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
           TWILIO_WHATSAPP_NUMBER: !Ref TwilioWhatsAppNumber
           TWILIO_VERIFY_SERVICE_SID: !Ref TwilioVerifyServiceSid
+          DOCUMENT_INTAKE_FUNCTION: !Ref DocumentIntakeFunction
+          FORM_SCHEMA_EXTRACTOR_FUNCTION: !Ref FormSchemaExtractorFunction
+          AUTO_FILL_FUNCTION: !Ref AutoFillFunction
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref UsersTable }
         - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
@@ -216,6 +219,16 @@ Resources:
           TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
           TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
           TWILIO_WHATSAPP_NUMBER: !Ref TwilioWhatsAppNumber
+          APPEAL_GENERATOR_FUNCTION: !Ref AppealGeneratorFunction
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref DeadlinesTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref UsersTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
+        - Statement:
+            - Effect: Allow
+              Action: ['lambda:InvokeFunction']
+              Resource: '*'
 
   StatusPollerFunction:
     Type: AWS::Serverless::Function
@@ -240,6 +253,65 @@ Resources:
       Policies:
         - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
         - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - Statement:
+            - Effect: Allow
+              Action: ['bedrock:InvokeModel', 'bedrock:Converse']
+              Resource: '*'
+
+  # ═══════════════════════════════════════
+  # DOCUMENT BUILDER AGENT FUNCTIONS
+  # ═══════════════════════════════════════
+  DocumentIntakeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-document-intake
+      Handler: src/lambdas/document-intake/index.handler
+      Timeout: 120
+      MemorySize: 1024
+      Environment:
+        Variables:
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+      Policies:
+        - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
+        - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
+        - Statement:
+            - Effect: Allow
+              Action: ['textract:DetectDocumentText', 'textract:AnalyzeDocument']
+              Resource: '*'
+            - Effect: Allow
+              Action: ['rekognition:DetectModerationLabels']
+              Resource: '*'
+            - Effect: Allow
+              Action: ['bedrock:InvokeModel', 'bedrock:Converse']
+              Resource: '*'
+
+  FormSchemaExtractorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-form-schema-extractor
+      Handler: src/lambdas/form-schema-extractor/index.handler
+      Timeout: 60
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
+        - Statement:
+            - Effect: Allow
+              Action: ['bedrock:InvokeModel', 'bedrock:Converse']
+              Resource: '*'
+
+  AutoFillFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bimasathi-auto-fill
+      Handler: src/lambdas/auto-fill/index.handler
+      Timeout: 60
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
         - Statement:
             - Effect: Allow
               Action: ['bedrock:InvokeModel', 'bedrock:Converse']

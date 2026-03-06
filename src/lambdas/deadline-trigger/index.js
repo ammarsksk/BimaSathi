@@ -11,19 +11,29 @@
 const _DB = require('../../shared/dynamodb');
 const { _Send_Text_Message } = require('../../shared/twilio');
 const { _Get_Template, _Fill_Template, _Template_Keys } = require('../../shared/languages');
-const { _Deadline_Config } = require('../../shared/constants');
+const { _Deadline_Config, _Claim_Status } = require('../../shared/constants');
+const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
+
+const _Lambda_Client = new LambdaClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 
 
 exports.handler = async (_Event) => {
     console.log('Deadline trigger invoked');
 
     try {
+        // ── Original: Deadline reminders ──
         const _Deadlines = await _DB._Get_Upcoming_Deadlines(48);
         console.log(`Found ${_Deadlines.length} upcoming deadlines`);
 
         for (const _Deadline of _Deadlines) {
             await _Process_Single_Deadline(_Deadline);
         }
+
+        // ── Agent 6 Enhancement: Stalled claim re-engagement ──
+        await _Check_Stalled_Claims();
+
+        // ── Agent 6 Enhancement: 5-day insurer acknowledgement check ──
+        await _Check_Unacknowledged_Submissions();
 
         return { statusCode: 200, body: JSON.stringify({ processed: _Deadlines.length }) };
     } catch (_Error) {
@@ -163,4 +173,117 @@ function _Format_Remaining_Time(_Hours, _Language) {
     }
     const _Days = Math.round(_Hours / 24);
     return _Language === 'hi' ? `${_Days} din` : `${_Days} days`;
+}
+
+
+// ═════════════════════════════════════════════════════════════
+//  AGENT 6 ENHANCEMENTS — Stalled Claims & Acknowledgement Check
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * Re-engage farmers whose claims have had pending fields for > 24 hours
+ */
+async function _Check_Stalled_Claims() {
+    try {
+        const _Draft_Claims = await _DB._Get_Claims_By_Status(_Claim_Status.DRAFT);
+        const _Now = new Date();
+        let _Stalled_Count = 0;
+
+        for (const _Claim of _Draft_Claims) {
+            const _Last_Updated = new Date(_Claim.lastUpdated);
+            const _Hours_Since = (_Now - _Last_Updated) / (1000 * 60 * 60);
+
+            // Only re-engage if stalled for > 24 hours and has a form schema with pending fields
+            if (_Hours_Since > 24 && _Claim.formSchema) {
+                const _Pending = _Claim.formSchema.filter(_F => _F.status === 'pending' && _F.field_type !== 'photo');
+                if (_Pending.length === 0) continue;
+
+                const _User = await _DB._Get_User(_Claim.phoneNumber?.replace('whatsapp:', '') || '');
+                const _Language = _User?.language || 'hi';
+                const _Next_Field = _Pending[0];
+
+                const _Nudge = _Language === 'en'
+                    ? `👋 Hi! Your claim ${_Claim.claimId} is still incomplete.\n\nWe still need ${_Pending.length} more details. The next one is: ${_Next_Field.field_label}.\n\nReply here to continue, or type "menu" for options.`
+                    : `👋 Namaste! Aapki claim ${_Claim.claimId} abhi adhuri hai.\n\nAbhi ${_Pending.length} aur details chahiye. Agla: ${_Next_Field.language_hint || _Next_Field.field_label}.\n\nYahan reply karein continue karne ke liye, ya "menu" type karein.`;
+
+                const _Phone = _Claim.phoneNumber?.startsWith('+') ? _Claim.phoneNumber : `+91${_Claim.phoneNumber}`;
+
+                try {
+                    await _Send_Text_Message(_Phone, _Nudge);
+                    _Stalled_Count++;
+                    console.log(`Stalled re-engagement sent for ${_Claim.claimId}`);
+                } catch (_Err) {
+                    console.error(`Stalled nudge failed for ${_Claim.claimId}:`, _Err.message);
+                }
+            }
+        }
+
+        if (_Stalled_Count > 0) {
+            console.log(`Re-engaged ${_Stalled_Count} stalled claims`);
+        }
+    } catch (_Err) {
+        console.error('Stalled claims check failed:', _Err.message);
+    }
+}
+
+
+/**
+ * Check if submitted claims have been acknowledged within 5 days.
+ * If not, auto-generate a follow-up appeal draft and notify the farmer.
+ */
+async function _Check_Unacknowledged_Submissions() {
+    try {
+        const _Submitted = await _DB._Get_Claims_By_Status(_Claim_Status.SUBMITTED);
+        const _Now = new Date();
+        const _Five_Days_Ms = 5 * 24 * 60 * 60 * 1000;
+        let _Follow_Up_Count = 0;
+
+        for (const _Claim of _Submitted) {
+            const _Submitted_At = new Date(_Claim.lastUpdated);
+            const _Ms_Since = _Now - _Submitted_At;
+
+            if (_Ms_Since > _Five_Days_Ms) {
+                const _User = await _DB._Get_User(_Claim.phoneNumber?.replace('whatsapp:', '') || '');
+                const _Language = _User?.language || 'hi';
+
+                // Generate auto-follow-up via appeal generator
+                try {
+                    await _Lambda_Client.send(new InvokeCommand({
+                        FunctionName: process.env.APPEAL_GENERATOR_FUNCTION || 'bimasathi-appeal-generator',
+                        InvocationType: 'Event',  // async
+                        Payload: Buffer.from(JSON.stringify({
+                            claimId: _Claim.claimId,
+                            claimData: _Claim,
+                            isFollowUp: true,
+                        })),
+                    }));
+
+                    const _Follow_Up_Msg = _Language === 'en'
+                        ? `📝 Your claim ${_Claim.claimId} was submitted ${Math.round(_Ms_Since / (24 * 60 * 60 * 1000))} days ago but hasn't been acknowledged yet.\n\nWe're generating a follow-up letter for you. You'll receive a download link shortly.`
+                        : `📝 Aapki claim ${_Claim.claimId} ${Math.round(_Ms_Since / (24 * 60 * 60 * 1000))} din pehle submit hui thi lekin abhi tak acknowledgement nahi mili.\n\nHum follow-up letter bana rahe hain. Jaldi download link milega.`;
+
+                    const _Phone = _Claim.phoneNumber?.startsWith('+') ? _Claim.phoneNumber : `+91${_Claim.phoneNumber}`;
+                    await _Send_Text_Message(_Phone, _Follow_Up_Msg);
+                    _Follow_Up_Count++;
+
+                    await _DB._Log_Audit({
+                        claimId: _Claim.claimId,
+                        actor: 'system',
+                        action: 'auto_follow_up_generated',
+                        metadata: { daysSinceSubmission: Math.round(_Ms_Since / (24 * 60 * 60 * 1000)) },
+                    });
+
+                    console.log(`Follow-up generated for ${_Claim.claimId}`);
+                } catch (_Err) {
+                    console.error(`Follow-up failed for ${_Claim.claimId}:`, _Err.message);
+                }
+            }
+        }
+
+        if (_Follow_Up_Count > 0) {
+            console.log(`Generated ${_Follow_Up_Count} follow-up letters`);
+        }
+    } catch (_Err) {
+        console.error('Unacknowledged submissions check failed:', _Err.message);
+    }
 }

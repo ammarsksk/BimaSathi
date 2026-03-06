@@ -16,6 +16,8 @@ const _Conversation_States = Object.freeze({
     LOSS_REPORT: 'LOSS_REPORT',
     CROP_DETAILS: 'CROP_DETAILS',
     DATE_LOCATION: 'DATE_LOCATION',
+    DOCUMENT_INTAKE: 'DOCUMENT_INTAKE',
+    SCHEMA_COLLECTION: 'SCHEMA_COLLECTION',
     PHOTO_EVIDENCE: 'PHOTO_EVIDENCE',
     REVIEW_CONFIRM: 'REVIEW_CONFIRM',
     TRACK_STATUS: 'TRACK_STATUS',
@@ -200,6 +202,55 @@ const _Message_Types = Object.freeze({
 
 
 // ─────────────────────────────────────────────────────────────
+//  Document Types — classification of received documents
+// ─────────────────────────────────────────────────────────────
+const _Document_Types = Object.freeze({
+    INSURANCE_FORM_TEMPLATE: 'INSURANCE_FORM_TEMPLATE',
+    CROP_LOSS_PHOTO: 'CROP_LOSS_PHOTO',
+    LAND_RECORD: 'LAND_RECORD',
+    POLICY_DOCUMENT: 'POLICY_DOCUMENT',
+    AADHAAR_OR_ID: 'AADHAAR_OR_ID',
+    BANK_PASSBOOK: 'BANK_PASSBOOK',
+    UNKNOWN: 'UNKNOWN',
+});
+
+
+// ─────────────────────────────────────────────────────────────
+//  Field Status — form schema field completion tracking
+// ─────────────────────────────────────────────────────────────
+const _Field_Status = Object.freeze({
+    PENDING: 'pending',
+    COMPLETED: 'completed',
+    AUTO_FILLED: 'auto_filled',
+    PREFILLED: 'prefilled',
+    SKIPPED: 'skipped',
+});
+
+
+// ─────────────────────────────────────────────────────────────
+//  Default PMFBY Form Schema — baseline when no template doc
+// ─────────────────────────────────────────────────────────────
+const _Default_PMFBY_Schema = Object.freeze([
+    { field_name: 'farmer_name', field_label: 'Full Name of Farmer', field_type: 'text', is_required: true, accepted_values: null, language_hint: 'Kisan ka pura naam batayein', status: 'pending', value: null },
+    { field_name: 'aadhaar_number', field_label: 'Aadhaar Number', field_type: 'text', is_required: true, accepted_values: null, language_hint: 'Aapka Aadhaar card number (12 digit)', status: 'pending', value: null },
+    { field_name: 'phone_number', field_label: 'Phone Number', field_type: 'text', is_required: true, accepted_values: null, language_hint: 'Aapka mobile number', status: 'pending', value: null },
+    { field_name: 'village', field_label: 'Village / Gram Panchayat', field_type: 'text', is_required: true, accepted_values: null, language_hint: 'Aapka gaon ya gram panchayat ka naam', status: 'pending', value: null },
+    { field_name: 'district', field_label: 'District', field_type: 'text', is_required: true, accepted_values: null, language_hint: 'Kaun sa zila hai', status: 'pending', value: null },
+    { field_name: 'state', field_label: 'State', field_type: 'text', is_required: true, accepted_values: null, language_hint: 'Kaun sa rajya hai', status: 'pending', value: null },
+    { field_name: 'crop_type', field_label: 'Crop Name', field_type: 'choice', is_required: true, accepted_values: ['wheat', 'rice', 'cotton', 'sugarcane', 'soybean', 'pulses', 'maize', 'groundnut', 'mustard', 'other'], language_hint: 'Kaun si fasal ugayi thi', status: 'pending', value: null },
+    { field_name: 'season', field_label: 'Crop Season', field_type: 'choice', is_required: true, accepted_values: ['kharif', 'rabi', 'zaid'], language_hint: 'Fasal ka season - Kharif, Rabi, ya Zaid', status: 'pending', value: null },
+    { field_name: 'area_hectares', field_label: 'Area Affected (Hectares)', field_type: 'number', is_required: true, accepted_values: null, language_hint: 'Kitne hectare ya bigha mein nuksan hua', status: 'pending', value: null },
+    { field_name: 'loss_date', field_label: 'Date of Crop Loss', field_type: 'date', is_required: true, accepted_values: null, language_hint: 'Nuksan kab hua - tarikh batayein', status: 'pending', value: null },
+    { field_name: 'cause', field_label: 'Cause of Loss', field_type: 'choice', is_required: true, accepted_values: ['flood', 'drought', 'hail', 'unseasonal_rain', 'pest', 'disease', 'fire', 'cyclone', 'frost', 'landslide', 'other'], language_hint: 'Nuksan ka karan kya tha - baadh, sukha, ole, baarish', status: 'pending', value: null },
+    { field_name: 'bank_account_number', field_label: 'Bank Account Number', field_type: 'text', is_required: true, accepted_values: null, language_hint: 'Bank khata number jismein paisa aayega', status: 'pending', value: null },
+    { field_name: 'bank_ifsc', field_label: 'Bank IFSC Code', field_type: 'text', is_required: true, accepted_values: null, language_hint: 'Bank ka IFSC code - passbook mein likha hota hai', status: 'pending', value: null },
+    { field_name: 'policy_number', field_label: 'Insurance Policy Number', field_type: 'text', is_required: false, accepted_values: null, language_hint: 'Agar purani policy hai to number batayein, nahi to chhod dein', status: 'pending', value: null },
+    { field_name: 'land_survey_number', field_label: 'Land Survey / Khasra Number', field_type: 'text', is_required: false, accepted_values: null, language_hint: 'Khet ka khasra number ya survey number', status: 'pending', value: null },
+    { field_name: 'crop_loss_photo', field_label: 'Photo of Crop Damage', field_type: 'photo', is_required: true, accepted_values: null, language_hint: 'Apne khet ki photo bhejein jismein nuksan dikhe', status: 'pending', value: null },
+]);
+
+
+// ─────────────────────────────────────────────────────────────
 //  DynamoDB Table Name Defaults (overridden via env vars)
 // ─────────────────────────────────────────────────────────────
 const _Table_Names = Object.freeze({
@@ -275,6 +326,9 @@ module.exports = {
     _Photo_Config,
     _Damage_Labels,
     _Message_Types,
+    _Document_Types,
+    _Field_Status,
+    _Default_PMFBY_Schema,
     _Table_Names,
     _Generate_Claim_Id,
     _Bigha_To_Hectares,

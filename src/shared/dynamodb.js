@@ -436,6 +436,84 @@ async function _Verify_Consent(_Farmer_Id, _Helper_Id) {
 
 
 // ═════════════════════════════════════════════════════════════
+//  FORM SCHEMA — dynamic field tracking for document builder
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * Store or update the form schema on a claim
+ * @param {string} _Claim_Id — claim identifier
+ * @param {string} _User_Id — user identifier (sort key)
+ * @param {Array} _Schema — array of field objects
+ */
+async function _Update_Form_Schema(_Claim_Id, _User_Id, _Schema) {
+    await _Doc_Client.send(new UpdateCommand({
+        TableName: _Table_Names.CLAIMS,
+        Key: { claimId: _Claim_Id, userId: _User_Id },
+        UpdateExpression: 'SET #fs = :schema, #lu = :ts',
+        ExpressionAttributeNames: { '#fs': 'formSchema', '#lu': 'lastUpdated' },
+        ExpressionAttributeValues: { ':schema': _Schema, ':ts': new Date().toISOString() },
+    }));
+}
+
+/**
+ * Get pending fields from a claim's form schema
+ * @param {string} _Claim_Id — claim identifier
+ * @returns {Array} Fields with status 'pending'
+ */
+async function _Get_Pending_Fields(_Claim_Id) {
+    const _Claim = await _Get_Claim_By_Id(_Claim_Id);
+    if (!_Claim?.formSchema) return [];
+    return _Claim.formSchema.filter(_F => _F.status === 'pending');
+}
+
+/**
+ * Update a single field's status and value in the form schema
+ * @param {string} _Claim_Id — claim identifier
+ * @param {string} _User_Id — user identifier (sort key)
+ * @param {string} _Field_Name — the field to update
+ * @param {string} _Status — new status
+ * @param {*} _Value — field value (optional)
+ * @param {string} _Source — source of the value (optional, e.g. 'aadhaar_card')
+ */
+async function _Update_Field_Status(_Claim_Id, _User_Id, _Field_Name, _Status, _Value = null, _Source = null) {
+    const _Claim = await _Get_Claim_By_Id(_Claim_Id);
+    if (!_Claim?.formSchema) return;
+
+    const _Updated_Schema = _Claim.formSchema.map(_Field => {
+        if (_Field.field_name === _Field_Name) {
+            return { ..._Field, status: _Status, value: _Value !== null ? _Value : _Field.value, source: _Source || _Field.source };
+        }
+        return _Field;
+    });
+
+    await _Update_Form_Schema(_Claim_Id, _User_Id, _Updated_Schema);
+}
+
+/**
+ * Store document metadata (classification, extracted text) under the claim
+ * @param {string} _Claim_Id — claim identifier
+ * @param {string} _User_Id — user identifier (sort key)
+ * @param {Object} _Doc_Meta — { type, s3Key, extractedText, keyValues, classifiedAt }
+ */
+async function _Store_Document_Metadata(_Claim_Id, _User_Id, _Doc_Meta) {
+    const _Claim = await _Get_Claim_By_Id(_Claim_Id);
+    const _Docs = _Claim?.documentsReceived || [];
+    _Docs.push({
+        ..._Doc_Meta,
+        receivedAt: new Date().toISOString(),
+    });
+
+    await _Doc_Client.send(new UpdateCommand({
+        TableName: _Table_Names.CLAIMS,
+        Key: { claimId: _Claim_Id, userId: _User_Id },
+        UpdateExpression: 'SET #dr = :docs, #lu = :ts',
+        ExpressionAttributeNames: { '#dr': 'documentsReceived', '#lu': 'lastUpdated' },
+        ExpressionAttributeValues: { ':docs': _Docs, ':ts': new Date().toISOString() },
+    }));
+}
+
+
+// ═════════════════════════════════════════════════════════════
 //  COMPLETENESS SCORE CALCULATOR
 // ═════════════════════════════════════════════════════════════
 
@@ -497,6 +575,12 @@ module.exports = {
     // Consent
     _Create_Consent,
     _Verify_Consent,
+
+    // Form Schema
+    _Update_Form_Schema,
+    _Get_Pending_Fields,
+    _Update_Field_Status,
+    _Store_Document_Metadata,
 
     // Scoring
     _Calculate_Completeness_Score,

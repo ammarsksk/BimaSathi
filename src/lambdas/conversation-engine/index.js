@@ -165,7 +165,9 @@ exports.handler = async (_Event) => {
             const _Skip_Map = {
                 [_States.LOSS_REPORT]: _States.CROP_DETAILS,
                 [_States.CROP_DETAILS]: _States.DATE_LOCATION,
-                [_States.DATE_LOCATION]: _States.PHOTO_EVIDENCE,
+                [_States.DATE_LOCATION]: _States.DOCUMENT_INTAKE,
+                [_States.DOCUMENT_INTAKE]: _States.SCHEMA_COLLECTION,
+                [_States.SCHEMA_COLLECTION]: _States.PHOTO_EVIDENCE,
             };
             const _Next = _Skip_Map[_Session.state];
             if (_Next) {
@@ -540,10 +542,15 @@ const _State_Handlers = {
 
             await _DB._Create_Deadline(_Claim_Id, event.from.replace('whatsapp:', ''), _Intake.deadline);
 
+            // Transition to document intake for supporting documents
+            const _Doc_Prompt = language === 'en'
+                ? '📄 Great! Now you can send supporting documents (Aadhaar, bank passbook, land records, insurance form).\n\nSend a photo or PDF of any document, or type "skip" to go directly to photo evidence.'
+                : '📄 Bahut accha! Ab aap supporting documents bhej sakte hain (Aadhaar, passbook, zameen ka record, bima form).\n\nKisi bhi document ki photo ya PDF bhejein, ya "skip" type karein seedha photo evidence ke liye.';
+
             return {
-                messages: [{ body: _Lang._Get_Template('ask_photos', language) }],
-                next_state: _States.PHOTO_EVIDENCE,
-                context: { intake: _Intake, photoCount: 0, approvedPhotos: 0 },
+                messages: [{ body: _Doc_Prompt }],
+                next_state: _States.DOCUMENT_INTAKE,
+                context: { intake: _Intake, documentCount: 0 },
             };
         }
 
@@ -869,6 +876,210 @@ const _State_Handlers = {
         };
     },
 
+    // ── DOCUMENT_INTAKE: Process document uploads (PDFs, IDs, passbooks) ──
+    [_States.DOCUMENT_INTAKE]: async ({ type, event, context, language, from }) => {
+        // Only process image and document message types
+        if (type !== 'image' && type !== 'document') {
+            const _Prompt = language === 'en'
+                ? '📄 Please send a document (photo of Aadhaar, bank passbook, land record, or insurance form).\n\nOr type "skip" to proceed without documents.'
+                : '📄 Kripya ek document bhejein (Aadhaar, passbook, land record, ya insurance form ki photo).\n\nYa "skip" type karein bina document ke aage badhne ke liye.';
+            return { messages: [{ body: _Prompt }] };
+        }
+
+        const _Claim_Id = context.claimId;
+
+        // Invoke document intake agent
+        const _Doc_Result = await _Invoke_Document_Intake(event.media_data, _Claim_Id, context.userId, language, context);
+        if (!_Doc_Result?.success) {
+            const _Msg = language === 'en'
+                ? `❌ Could not process document: ${_Doc_Result?.reason || 'Unknown error'}.\nPlease try again or send a different document.`
+                : `❌ Document process nahi ho paya: ${_Doc_Result?.reason || 'Kuch galat hua'}.\nDobara try karein ya dusra document bhejein.`;
+            return { messages: [{ body: _Msg }] };
+        }
+
+        // Show classification result
+        const _Type_Labels = {
+            INSURANCE_FORM_TEMPLATE: language === 'en' ? '📋 Insurance Form' : '📋 Bima Form',
+            CROP_LOSS_PHOTO: language === 'en' ? '📸 Crop Damage Photo' : '📸 Fasal Nuksan Photo',
+            LAND_RECORD: language === 'en' ? '📜 Land Record' : '📜 Zameen Ka Record',
+            POLICY_DOCUMENT: language === 'en' ? '📑 Policy Document' : '📑 Policy Document',
+            AADHAAR_OR_ID: language === 'en' ? '🪪 Aadhaar / ID Card' : '🪪 Aadhaar / ID Card',
+            BANK_PASSBOOK: language === 'en' ? '🏦 Bank Passbook' : '🏦 Bank Passbook',
+            UNKNOWN: language === 'en' ? '📄 Document' : '📄 Document',
+        };
+
+        const _Type_Label = _Type_Labels[_Doc_Result.classification] || _Type_Labels.UNKNOWN;
+        const _Confirm = language === 'en'
+            ? `✅ ${_Type_Label} received and processed!\n\n📊 Extracted ${_Doc_Result.keyValues?.length || 0} data fields.\n\nSend more documents or type "done" to continue.`
+            : `✅ ${_Type_Label} mil gaya aur process ho gaya!\n\n📊 ${_Doc_Result.keyValues?.length || 0} data fields nikale.\n\nAur documents bhejein ya "done" type karein aage badhne ke liye.`;
+
+        const _Doc_Count = (context.documentCount || 0) + 1;
+
+        // Trigger schema extraction in background
+        await _Invoke_Form_Schema_Extractor(_Claim_Id, context.userId, _Doc_Result);
+
+        // Trigger auto-fill in background
+        await _Invoke_Auto_Fill(_Claim_Id, context.userId);
+
+        return {
+            messages: [{ body: _Confirm }],
+            context: { documentCount: _Doc_Count },
+        };
+    },
+
+    // ── SCHEMA_COLLECTION: Dynamic schema-driven field collection ──
+    [_States.SCHEMA_COLLECTION]: async ({ text, intent, context, language, from, type, event }) => {
+        const _Claim_Id = context.claimId;
+        const _User_Id = context.userId;
+
+        // Handle "done" to move to photo evidence
+        const _Lower = (text || '').trim().toLowerCase();
+        if (_Lower === 'done' || _Lower === 'ho gaya' || _Lower === 'bas') {
+            return {
+                messages: [{ body: _Lang._Get_Template('ask_photos', language) }],
+                next_state: _States.PHOTO_EVIDENCE,
+                context: { photoCount: 0, approvedPhotos: 0 },
+            };
+        }
+
+        // Load pending fields from DynamoDB
+        const _Pending = await _DB._Get_Pending_Fields(_Claim_Id);
+        // Filter out photo fields (handled separately)
+        const _Non_Photo_Pending = _Pending.filter(_F => _F.field_type !== 'photo');
+
+        if (_Non_Photo_Pending.length === 0) {
+            // All fields collected → move to photo evidence
+            const _Msg = language === 'en'
+                ? '✅ All required information collected! Now let\'s add photo evidence.'
+                : '✅ Saari zaroori jaankari mil gayi! Ab photo evidence bhejein.';
+            return {
+                messages: [{ body: _Msg }, { body: _Lang._Get_Template('ask_photos', language) }],
+                next_state: _States.PHOTO_EVIDENCE,
+                context: { photoCount: 0, approvedPhotos: 0 },
+            };
+        }
+
+        // Check if we're collecting value for a specific field
+        const _Current_Field = context._schemaCurrentField;
+        if (_Current_Field && text.trim()) {
+            // Validate and store the response
+            const _Field = _Non_Photo_Pending.find(_F => _F.field_name === _Current_Field) ||
+                { field_name: _Current_Field, field_type: 'text' };
+
+            let _Value = text.trim();
+            let _Valid = true;
+            let _Error_Msg = '';
+
+            // Type-based validation
+            if (_Field.field_type === 'number') {
+                const _Num = parseFloat(_Value.replace(/[^0-9.]/g, ''));
+                if (isNaN(_Num)) {
+                    _Valid = false;
+                    _Error_Msg = language === 'en' ? '❌ Please enter a valid number.' : '❌ Sahi number batayein.';
+                } else {
+                    // Check for bigha conversion
+                    if (_Value.toLowerCase().includes('bigha')) {
+                        _Value = String(_Constants._Bigha_To_Hectares(_Num));
+                    } else {
+                        _Value = String(_Num);
+                    }
+                }
+            } else if (_Field.field_type === 'date') {
+                _Value = await _Bedrock._Parse_Date(_Value);
+            } else if (_Field.field_type === 'choice' && _Field.accepted_values) {
+                // Check if they entered a number or the value itself
+                const _Num_Choice = parseInt(_Value);
+                if (!isNaN(_Num_Choice) && _Num_Choice > 0 && _Num_Choice <= _Field.accepted_values.length) {
+                    _Value = _Field.accepted_values[_Num_Choice - 1];
+                } else {
+                    const _Match = _Field.accepted_values.find(_V => _V.toLowerCase() === _Value.toLowerCase());
+                    if (_Match) {
+                        _Value = _Match;
+                    }
+                    // Let Bedrock handle fuzzy matching if no exact match
+                }
+            }
+
+            if (!_Valid) {
+                return { messages: [{ body: _Error_Msg }] };
+            }
+
+            // Store the field value
+            const _Submitted_By = context.helperMode ? 'helper' : 'farmer';
+            await _DB._Update_Field_Status(_Claim_Id, _User_Id, _Current_Field, 'completed', _Value, _Submitted_By);
+
+            // Update local intake context too
+            const _Intake = context.intake || {};
+            _Intake[_Current_Field] = _Value;
+
+            // Check progress
+            const _Claim = await _DB._Get_Claim_By_Id(_Claim_Id);
+            const _Schema = _Claim?.formSchema || [];
+            const _Total_Required = _Schema.filter(_F => _F.is_required && _F.field_type !== 'photo').length;
+            const _Completed = _Schema.filter(_F => _F.status !== 'pending' && _F.field_type !== 'photo').length + 1; // +1 for just-completed
+
+            // Progress summary every 3 fields
+            const _Messages = [];
+            const _Confirm = language === 'en'
+                ? `✅ Got it! (${_Completed}/${_Total_Required})`
+                : `✅ Mil gaya! (${_Completed}/${_Total_Required})`;
+            _Messages.push({ body: _Confirm });
+
+            if (_Completed % 3 === 0 && _Completed < _Total_Required) {
+                const _Progress = language === 'en'
+                    ? `📊 Progress: ${_Completed} of ${_Total_Required} required details collected. Keep going! 💪`
+                    : `📊 Progress: ${_Total_Required} mein se ${_Completed} zaroori details mil gayi. Chalte rahein! 💪`;
+                _Messages.push({ body: _Progress });
+            }
+
+            // Get next pending field
+            const _Remaining = await _DB._Get_Pending_Fields(_Claim_Id);
+            const _Next_Non_Photo = _Remaining.filter(_F => _F.field_type !== 'photo');
+
+            if (_Next_Non_Photo.length === 0) {
+                _Messages.push({
+                    body: language === 'en'
+                        ? '🎉 All required information collected! Now let\'s add photo evidence.'
+                        : '🎉 Saari zaroori jaankari mil gayi! Ab photo evidence bhejein.',
+                });
+                _Messages.push({ body: _Lang._Get_Template('ask_photos', language) });
+                return {
+                    messages: _Messages,
+                    next_state: _States.PHOTO_EVIDENCE,
+                    context: { intake: _Intake, _schemaCurrentField: null, photoCount: 0, approvedPhotos: 0 },
+                };
+            }
+
+            // Generate question for next field
+            const _Next_Field = _Next_Non_Photo[0];
+            const _Question = await _Bedrock._Generate_Field_Question(_Next_Field, language, _Completed, _Total_Required);
+            _Messages.push({ body: _Question });
+
+            return {
+                messages: _Messages,
+                context: { intake: _Intake, _schemaCurrentField: _Next_Field.field_name },
+            };
+        }
+
+        // First entry into SCHEMA_COLLECTION — generate first question
+        const _First_Field = _Non_Photo_Pending[0];
+        const _Claim = await _DB._Get_Claim_By_Id(_Claim_Id);
+        const _Schema = _Claim?.formSchema || [];
+        const _Total = _Schema.filter(_F => _F.is_required && _F.field_type !== 'photo').length;
+        const _Done = _Schema.filter(_F => _F.status !== 'pending' && _F.field_type !== 'photo').length;
+
+        const _Intro = language === 'en'
+            ? `📝 Let's collect the remaining details for your claim.\n\n📊 ${_Done}/${_Total} fields completed. ${_Non_Photo_Pending.length} more to go.\n\n💡 Type "skip" to skip optional fields, "done" to finish early.`
+            : `📝 Aapki claim ke liye baaki details le lete hain.\n\n📊 ${_Done}/${_Total} fields complete. ${_Non_Photo_Pending.length} aur chahiye.\n\n💡 Optional fields ke liye "skip" type karein, jaldi finish karne ke liye "done" type karein.`;
+
+        const _Question = await _Bedrock._Generate_Field_Question(_First_Field, language, _Done, _Total);
+
+        return {
+            messages: [{ body: _Intro }, { body: _Question }],
+            context: { _schemaCurrentField: _First_Field.field_name },
+        };
+    },
+
     // ── VOICE_INPUT: Handled at top of engine (transcribed before state dispatch) ──
     [_States.VOICE_INPUT]: async ({ language }) => {
         return { messages: [{ body: _Lang._Get_Template('main_menu', language) }], next_state: _States.MAIN_MENU };
@@ -952,5 +1163,56 @@ async function _Invoke_Appeal_Generator(_Claim_Id, _Claim_Data) {
     } catch (_Err) {
         console.error('Appeal generator invocation failed:', _Err);
         return null;
+    }
+}
+
+async function _Invoke_Document_Intake(_Media_Data, _Claim_Id, _User_Id, _Language, _Context) {
+    try {
+        const _Response = await _Lambda_Client.send(new InvokeCommand({
+            FunctionName: process.env.DOCUMENT_INTAKE_FUNCTION || 'bimasathi-document-intake',
+            Payload: Buffer.from(JSON.stringify({
+                claimId: _Claim_Id,
+                userId: _User_Id,
+                mediaData: _Media_Data,
+                language: _Language,
+                context: { documentCount: _Context.documentCount || 0 },
+            })),
+        }));
+        const _Result = JSON.parse(new TextDecoder().decode(_Response.Payload));
+        return typeof _Result.body === 'string' ? JSON.parse(_Result.body) : _Result;
+    } catch (_Err) {
+        console.error('Document intake invocation failed:', _Err);
+        return { success: false, reason: 'Document processing unavailable' };
+    }
+}
+
+async function _Invoke_Form_Schema_Extractor(_Claim_Id, _User_Id, _Document_Data) {
+    try {
+        await _Lambda_Client.send(new InvokeCommand({
+            FunctionName: process.env.FORM_SCHEMA_EXTRACTOR_FUNCTION || 'bimasathi-form-schema-extractor',
+            InvocationType: 'Event',  // async — fire and forget
+            Payload: Buffer.from(JSON.stringify({
+                claimId: _Claim_Id,
+                userId: _User_Id,
+                documentData: _Document_Data,
+            })),
+        }));
+    } catch (_Err) {
+        console.error('Form schema extractor invocation failed:', _Err);
+    }
+}
+
+async function _Invoke_Auto_Fill(_Claim_Id, _User_Id) {
+    try {
+        await _Lambda_Client.send(new InvokeCommand({
+            FunctionName: process.env.AUTO_FILL_FUNCTION || 'bimasathi-auto-fill',
+            InvocationType: 'Event',  // async — fire and forget
+            Payload: Buffer.from(JSON.stringify({
+                claimId: _Claim_Id,
+                userId: _User_Id,
+            })),
+        }));
+    } catch (_Err) {
+        console.error('Auto-fill invocation failed:', _Err);
     }
 }

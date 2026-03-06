@@ -368,6 +368,148 @@ Return ONLY valid JSON — no markdown, no explanation:
 }
 
 
+// ═════════════════════════════════════════════════════════════
+//  DOCUMENT BUILDER AGENT — Bedrock AI Functions
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * Extract a form schema from document text — identifies fields that need filling
+ * @param {string} _Extracted_Text — raw text from Textract
+ * @returns {Array} Array of { field_name, field_label, field_type, is_required, accepted_values }
+ */
+async function _Extract_Form_Schema(_Extracted_Text) {
+    const _Prompt = `You are an expert at analyzing Indian crop insurance application forms (PMFBY and state-level schemes).
+
+Given the extracted text from an insurance form template, identify ALL fields that need to be filled in.
+
+For each field, return:
+- field_name: a snake_case identifier (e.g. "farmer_name", "aadhaar_number", "bank_ifsc")
+- field_label: the human-readable label as it appears on the form
+- field_type: one of "text", "number", "date", "choice", "photo"
+- is_required: true/false based on whether the form marks it as mandatory
+- accepted_values: array of valid options if field_type is "choice", otherwise null
+- language_hint: a simple Hindi/Hinglish hint explaining what data is needed
+
+Return a valid JSON array only. No explanation, no markdown fences.`;
+
+    try {
+        const _Result = await _Invoke_Model(_Prompt, _Extracted_Text, 2048);
+        const _Clean = _Result.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+        return JSON.parse(_Clean);
+    } catch (_Err) {
+        console.error('Form schema extraction failed:', _Err.message);
+        return [];
+    }
+}
+
+
+/**
+ * Auto-fill form fields by matching extracted document data against pending fields
+ * @param {Array} _Pending_Fields — fields with status 'pending'
+ * @param {Array} _Document_Data — extracted key-value pairs from received documents
+ * @returns {Array} Array of { field_name, value, confidence, source }
+ */
+async function _Auto_Fill_Fields(_Pending_Fields, _Document_Data) {
+    const _Prompt = `You are a data matching expert for Indian crop insurance applications.
+
+You have two inputs:
+1. PENDING FORM FIELDS that need to be filled (each has a field_name and field_label)
+2. EXTRACTED DATA from documents the farmer has already submitted (from Aadhaar, bank passbook, land records, etc.)
+
+Match the extracted data to the pending fields using semantic understanding. Consider:
+- Hindi/English field label variations (e.g. "नाम" = "Name" = "farmer_name")
+- Common document field formats (e.g. "UID No" = Aadhaar number)
+- Indian document conventions (IFSC codes, Khasra numbers, etc.)
+
+For each match, return:
+- field_name: the pending field's field_name
+- value: the extracted value to fill
+- confidence: a number between 0.0 and 1.0 indicating match confidence
+- source: the document type or key where this data came from
+
+Only return matches with confidence >= 0.5. Return a valid JSON array. No explanation, no markdown fences.`;
+
+    const _User_Msg = `PENDING FIELDS:\n${JSON.stringify(_Pending_Fields, null, 2)}\n\nEXTRACTED DOCUMENT DATA:\n${JSON.stringify(_Document_Data, null, 2)}`;
+
+    try {
+        const _Result = await _Invoke_Model(_Prompt, _User_Msg, 2048);
+        const _Clean = _Result.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+        return JSON.parse(_Clean);
+    } catch (_Err) {
+        console.error('Auto-fill matching failed:', _Err.message);
+        return [];
+    }
+}
+
+
+/**
+ * Generate a formal 3-paragraph claim narrative for PDF inclusion
+ * @param {Object} _Claim_Data — all collected claim fields
+ * @param {string} _Language — language code (output is always English for official documents)
+ * @returns {string} Formal claim description
+ */
+async function _Generate_Claim_Narrative(_Claim_Data) {
+    const _Prompt = `You are a professional insurance claim writer for the Indian crop insurance system (PMFBY).
+
+Write a formal 3-paragraph claim description for an official insurance claim document:
+
+Paragraph 1: Describe the farmer, their location, and the insured crop.
+Paragraph 2: Detail the loss event — date, cause, extent of damage, area affected.
+Paragraph 3: State the claim request, reference any supporting evidence (photos, documents), and note the filing timeline.
+
+Use formal English suitable for an official government insurance claim document. Keep it factual and concise (200-300 words total).
+Do not use markdown formatting. Write plain text paragraphs only.`;
+
+    try {
+        return await _Invoke_Model(_Prompt, JSON.stringify(_Claim_Data, null, 2), 1024);
+    } catch (_Err) {
+        console.error('Claim narrative generation failed:', _Err.message);
+        return 'Claim narrative could not be generated. Please refer to the attached form data and evidence.';
+    }
+}
+
+
+/**
+ * Generate a conversational question for a specific form field
+ * @param {Object} _Field — field schema object with field_name, field_label, field_type, etc.
+ * @param {string} _Language — farmer's preferred language code
+ * @param {number} _Progress_Current — number of fields completed so far
+ * @param {number} _Progress_Total — total required fields
+ * @returns {string} A simple, farmer-friendly question
+ */
+async function _Generate_Field_Question(_Field, _Language = 'hi', _Progress_Current = 0, _Progress_Total = 0) {
+    const _Lang_Map = { hi: 'Hindi/Hinglish', mr: 'Marathi', te: 'Telugu', ta: 'Tamil', gu: 'Gujarati', kn: 'Kannada', en: 'English' };
+    const _Lang_Name = _Lang_Map[_Language] || 'Hindi/Hinglish';
+
+    const _Prompt = `You are a friendly insurance assistant helping a rural Indian farmer fill an insurance claim form via WhatsApp.
+
+Generate a single conversational question to collect the following information from the farmer:
+- Field: ${_Field.field_label} (${_Field.field_name})
+- Type: ${_Field.field_type}
+- Required: ${_Field.is_required ? 'Yes' : 'No (optional)'}
+${_Field.accepted_values ? `- Valid options: ${_Field.accepted_values.join(', ')}` : ''}
+${_Field.language_hint ? `- Hint: ${_Field.language_hint}` : ''}
+
+Rules:
+1. Use simple ${_Lang_Name} language (mix with easy Hindi/English words if needed)
+2. If the field is a choice, list the options with numbers
+3. Add an appropriate emoji at the start
+4. If the field is optional, mention that they can type "skip" to skip it
+5. Keep it under 100 words
+6. Do NOT add any prefix like "Question:" — just output the message directly
+
+${_Progress_Total > 0 ? `Progress: ${_Progress_Current}/${_Progress_Total} fields completed.` : ''}`;
+
+    try {
+        return await _Invoke_Model(_Prompt, '', 256);
+    } catch (_Err) {
+        console.error('Field question generation failed:', _Err.message);
+        // Fallback: use the language_hint or field_label
+        return _Field.language_hint || `Please provide: ${_Field.field_label}`;
+    }
+}
+
+
 // ─────────────────────────────────────────────────────────────
 //  Exports
 // ─────────────────────────────────────────────────────────────
@@ -382,4 +524,9 @@ module.exports = {
     _Parse_Date,
     _Parse_Location,
     _Generate_Response,
+    // Document Builder Agent
+    _Extract_Form_Schema,
+    _Auto_Fill_Fields,
+    _Generate_Claim_Narrative,
+    _Generate_Field_Question,
 };
