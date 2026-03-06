@@ -197,15 +197,40 @@ exports.handler = async (_Event) => {
             }
         }
 
-        // ── Global intent overrides (work in any state) ──
-        // Bug #8: GREETING resets stale sessions
-        if (_Intent === 'GREETING' && _Session.state !== _States.WELCOME && _Session.state !== _States.LANGUAGE_SELECT) {
-            _Session.state = _States.WELCOME;
-            _Session.context = { _recentSids: [_Msg_Sid], _lastReplyAt: _Now };
+        // ── Strict Keyword Global Navigation ──
+        const _Is_Menu = ['menu', 'main menu', 'home', 'shuru', 'mukhya'].includes(_Lower_Text);
+        const _Is_Reset = ['reset', 'restart', 'start over', 'hi', 'hello'].includes(_Lower_Text);
+        const _Is_Help = ['help', 'madad', 'operator', 'agent'].includes(_Lower_Text);
+
+        if (_Is_Reset && _Session.state !== _States.WELCOME && _Session.state !== _States.LANGUAGE_SELECT) {
+            _Session.state = _States.LANGUAGE_SELECT;
+            _Session.context = { _recentSids: [..._Recent_Sids, _Msg_Sid].filter(Boolean).slice(-15), _lastReplyAt: _Now };
+            await _Twilio._Send_Text_Message(_From, _Lang._Get_Template('welcome', _Session.language || 'hi'));
+            await _Twilio._Send_Text_Message(_From, _Lang._Get_Template('language_prompt', 'en'));
+            await _DB._Upsert_Conversation(_Session);
+            return;
         }
-        if (_Intent === 'MENU') _Session.state = _States.MAIN_MENU;
-        if (_Intent === 'LANGUAGE_CHANGE') _Session.state = _States.LANGUAGE_SELECT;
-        if (_Intent === 'HELP') _Session.state = _States.OPERATOR_BRIDGE;
+
+        if (_Is_Menu && _Session.state !== _States.MAIN_MENU && _Session.state !== _States.LANGUAGE_SELECT && _Session.state !== _States.AUTH_OTP) {
+            _Session.state = _States.MAIN_MENU;
+            _Session.context._recentSids = [..._Recent_Sids, _Msg_Sid].filter(Boolean).slice(-15);
+            _Session.context._lastReplyAt = _Now;
+            await _Twilio._Send_Text_Message(_From, _Lang._Get_Template('main_menu', _Session.language || 'hi'));
+            await _DB._Upsert_Conversation(_Session);
+            return;
+        }
+
+        if (_Is_Help && _Session.state !== _States.OPERATOR_BRIDGE) {
+            _Session.state = _States.OPERATOR_BRIDGE;
+            _Session.context._recentSids = [..._Recent_Sids, _Msg_Sid].filter(Boolean).slice(-15);
+            _Session.context._lastReplyAt = _Now;
+            const _Msg = _Session.language === 'en'
+                ? '📞 A human operator will assist you shortly.\nMeanwhile, type "menu" to go back.'
+                : '📞 Ek operator jaldi aapki madad karega.\nTab tak "menu" type karein.';
+            await _Twilio._Send_Text_Message(_From, _Msg);
+            await _DB._Upsert_Conversation(_Session);
+            return;
+        }
 
         // ── Push state history (for "back" navigation) ──
         const _Pre_Handler_State = _Session.state;
@@ -321,6 +346,12 @@ const _State_Handlers = {
             _Selected = _Lang._Detect_Language(text);
         }
 
+        if (!_Selected || _Selected === 'unknown') {
+            return {
+                messages: [{ body: '⚠️ Please choose a valid option (1-7) or type your language. \n\nकृपया सही विकल्प चुनें (1-7) या अपनी भाषा टाइप करें।' }]
+            };
+        }
+
         const _Config = _Lang._Get_Language_Config(_Selected);
         const _Confirm = `✅ ${_Config._Name} (${_Config._Native_Name}) selected!`;
 
@@ -335,13 +366,22 @@ const _State_Handlers = {
     },
 
     // ── AUTH_OTP: Verify OTP → create/fetch user → main menu ──
-    [_States.AUTH_OTP]: async ({ text, from, language }) => {
+    [_States.AUTH_OTP]: async ({ text, from, language, context }) => {
         const _Clean_Phone = from.replace('whatsapp:', '');
         const _Is_Valid = await _Twilio._Verify_OTP(_Clean_Phone, text.trim());
 
         if (!_Is_Valid) {
+            const _Attempts = (context.otp_attempts || 0) + 1;
+            if (_Attempts >= 3) {
+                return {
+                    messages: [{ body: language === 'en' ? '❌ Session expired due to too many failed attempts. Type "hello" to start again.' : '❌ Session samapt hua. Dobara shuru karne ke liye "hello" bhejein.' }],
+                    next_state: _States.WELCOME,
+                    context: { otp_attempts: 0 }
+                };
+            }
             return {
-                messages: [{ body: language === 'en' ? '❌ Invalid OTP. Please try again.' : '❌ Galat OTP. Dobara try karein.' }],
+                messages: [{ body: language === 'en' ? `❌ Invalid OTP. Please try again. (Attempts left: ${3 - _Attempts})` : `❌ Galat OTP. Dobara try karein. (Avasar bache hain: ${3 - _Attempts})` }],
+                context: { otp_attempts: _Attempts }
             };
         }
 
@@ -419,14 +459,13 @@ const _State_Handlers = {
         _Intake[_Field] = text.trim();
 
         // Determine next field
-        const _Field_Order = ['farmer_name', 'village', 'district'];
+        const _Field_Order = ['farmer_name', 'village'];
         const _Current_Idx = _Field_Order.indexOf(_Field);
         const _Next_Field = _Field_Order[_Current_Idx + 1];
 
         if (_Next_Field) {
             const _Prompts = {
                 village: language === 'en' ? '🏘 Which village is your field in?' : '🏘 Aapka khet kis gaon mein hai?',
-                district: language === 'en' ? '🏛 Which district?' : '🏛 Kaun sa district?',
             };
             return {
                 messages: [{ body: _Prompts[_Next_Field] }],
@@ -877,12 +916,27 @@ const _State_Handlers = {
     },
 
     // ── DOCUMENT_INTAKE: Process document uploads (PDFs, IDs, passbooks) ──
-    [_States.DOCUMENT_INTAKE]: async ({ type, event, context, language, from }) => {
+    [_States.DOCUMENT_INTAKE]: async ({ type, event, context, language, from, text }) => {
+        // Handle "done" keyword explicitely for documents
+        if (type === 'text') {
+            const _Lower = (text || '').toLowerCase().trim();
+            if (_Lower === 'done' || _Lower === 'submit' || _Lower === 'ho gaya' || _Lower.includes('done with')) {
+                const _Msg = language === 'en'
+                    ? '⏭️ Understood. Moving to next step.'
+                    : '⏭️ Samajh gaya. Agle step par chalte hain.';
+                return {
+                    messages: [{ body: _Msg }],
+                    next_state: _States.SCHEMA_COLLECTION,
+                    context: { ...context },
+                };
+            }
+        }
+
         // Only process image and document message types
         if (type !== 'image' && type !== 'document') {
             const _Prompt = language === 'en'
-                ? '📄 Please send a document (photo of Aadhaar, bank passbook, land record, or insurance form).\n\nOr type "skip" to proceed without documents.'
-                : '📄 Kripya ek document bhejein (Aadhaar, passbook, land record, ya insurance form ki photo).\n\nYa "skip" type karein bina document ke aage badhne ke liye.';
+                ? '📄 Please send a document (photo of Aadhaar, bank passbook, land record, or insurance form).\n\nOr type "skip" or "done" to proceed without documents.'
+                : '📄 Kripya ek document bhejein (Aadhaar, passbook, land record, ya insurance form ki photo).\n\nYa "skip" ya "done" type karein bina document ke aage badhne ke liye.';
             return { messages: [{ body: _Prompt }] };
         }
 
