@@ -16,6 +16,7 @@ const _Bedrock_Region = process.env.BEDROCK_REGION || 'us-east-1';
 const _Model_Id = process.env.BEDROCK_MODEL_ID || 'us.amazon.nova-pro-v1:0';
 const _Fallback_Model_Id = 'us.amazon.nova-lite-v1:0';
 const _Bedrock_Client = new BedrockRuntimeClient({ region: _Bedrock_Region });
+const _Translation_Cache = new Map();
 
 
 // ═════════════════════════════════════════════════════════════
@@ -67,6 +68,64 @@ async function _Invoke_Fallback(_System_Prompt, _User_Message, _Max_Tokens) {
     }));
 
     return _Response.output?.message?.content?.[0]?.text || '';
+}
+
+/**
+ * Invoke Amazon Bedrock with an image buffer (multimodal vision)
+ * Uses the Converse API's image content block for Nova Pro vision analysis.
+ *
+ * @param {string} _System_Prompt — system-level instruction
+ * @param {Buffer} _Image_Buffer — raw image bytes (JPEG/PNG)
+ * @param {string} _Text_Message — optional text alongside the image
+ * @param {string} _Image_Format — 'jpeg', 'png', or 'webp' (default 'jpeg')
+ * @param {number} _Max_Tokens — max response length (default 512)
+ * @returns {string} Model response text
+ */
+async function _Invoke_Model_With_Image(_System_Prompt, _Image_Buffer, _Text_Message = 'Analyze this image.', _Image_Format = 'jpeg', _Max_Tokens = 512) {
+    try {
+        const _Content = [
+            { image: { format: _Image_Format, source: { bytes: _Image_Buffer } } },
+        ];
+        if (_Text_Message) {
+            _Content.push({ text: _Text_Message });
+        }
+
+        const _Response = await _Bedrock_Client.send(new ConverseCommand({
+            modelId: _Model_Id,
+            system: [{ text: _System_Prompt }],
+            messages: [{ role: 'user', content: _Content }],
+            inferenceConfig: { maxTokens: _Max_Tokens, temperature: 0.2 },
+        }));
+
+        return _Response.output?.message?.content?.[0]?.text || '';
+    } catch (_Error) {
+        console.error('Bedrock vision invocation failed:', _Error.message);
+
+        // Retry with fallback model (Nova Lite also supports vision)
+        if (_Error.name === 'ModelNotReadyException' || _Error.name === 'ThrottlingException'
+            || _Error.message?.includes('inference profile')
+            || _Error.message?.includes('on-demand throughput')
+            || _Error.message?.includes('not supported')) {
+            try {
+                const _Fallback_Content = [
+                    { image: { format: _Image_Format, source: { bytes: _Image_Buffer } } },
+                ];
+                if (_Text_Message) _Fallback_Content.push({ text: _Text_Message });
+
+                const _Fallback_Response = await _Bedrock_Client.send(new ConverseCommand({
+                    modelId: _Fallback_Model_Id,
+                    system: [{ text: _System_Prompt }],
+                    messages: [{ role: 'user', content: _Fallback_Content }],
+                    inferenceConfig: { maxTokens: _Max_Tokens, temperature: 0.2 },
+                }));
+                return _Fallback_Response.output?.message?.content?.[0]?.text || '';
+            } catch (_Fallback_Err) {
+                console.error('Bedrock vision fallback also failed:', _Fallback_Err.message);
+                return '';
+            }
+        }
+        return '';
+    }
 }
 
 
@@ -160,6 +219,79 @@ Return JSON: { "village": "string", "district": "string", "state": "string" }
 Map common village/district names to their correct spellings.
 If only village is mentioned, try to infer district and state if possible.
 Return ONLY the JSON object.`,
+    _Crop_Damage_Assessment: `You are an agricultural AI expert analyzing crop insurance claim photos for Indian farmers.
+Your task is to determine:
+1. Whether the photo shows a crop field (not a random object, selfie, screenshot, etc.)
+2. Whether the crop in the photo matches the claimed crop type (if provided)
+3. Whether the photo shows genuine crop damage or a healthy/undamaged field
+
+Crop identification guide:
+- Wheat (gehun): dense green or golden grass-like carpet, stalks stand upright, NO standing water, relatively dry soil
+- Rice (dhan): flooded paddies, standing water or thick wet mud, thin green shoots with distinct row spacing
+- Cotton (kapas): bushy plants with white cotton bolls
+- Sugarcane (ganna): tall thick-stemmed canes in dense rows
+- Soybean: short bushy legume plants with small pods
+- Maize (makka): tall corn-like plants with large ears
+- Mustard (sarson): bright yellow flowering fields
+- Groundnut (mungfali): low-growing plants with underground pods
+- Pulses (dal): small bushy legume plants
+
+CRITICAL DISTINCTION: If the image shows small green shoots growing in waterlogged soil, flooded fields, or cracked mud with visible row spacing, this is almost certainly RICE PADDY (dhan), NOT WHEAT.
+
+Damage indicators:
+- Flood: waterlogged fields, submerged crops, muddy soil
+- Drought: cracked dry soil, wilted/dried plants, brown vegetation
+- Hail: broken stems, shredded leaves, dented crops
+- Pest/disease: discolored leaves, eaten foliage, fungal growth
+- Fire: scorched land, burnt crops, ash
+- Storm/cyclone: uprooted plants, flattened crops
+
+Return ONLY a JSON object (no markdown, no explanation):
+{
+  "is_crop_photo": true/false,
+  "detected_crop": "wheat|rice|cotton|sugarcane|soybean|maize|mustard|groundnut|pulses|other|unknown",
+  "crop_matches_claim": true/false,
+  "is_crop_damage": true/false,
+  "confidence": 0-100,
+  "damage_type": "flood|drought|hail|pest|disease|fire|storm|other|none",
+  "reject_reason": "string or null",
+  "description": "Brief one-line description of what you see"
+}
+
+Rules:
+- If the photo is not a crop/field photo at all, set is_crop_photo=false, reject_reason="This does not appear to be a photo of a crop field."
+- If crop_type was provided and the photo shows a DIFFERENT crop, set crop_matches_claim=false, reject_reason="Photo appears to show [detected_crop], not [claimed_crop]."
+- If no crop_type context is given, set crop_matches_claim=true (benefit of the doubt).
+- For damage detection, be lenient — if there are ANY signs of stress, damage, or abnormality, mark as damage.
+- Only reject for damage if the field is clearly healthy and thriving with zero damage.`,
+
+    _Query_Bot_Responder: `You are BimaSathi Query Bot, an intelligent assistant helping Indian farmers understand crop insurance (PMFBY).
+You are currently chatting with a farmer who has asked a question from the Main Menu.
+
+Guidelines:
+1. Answer strictly based on common PMFBY rules. 
+2. If they ask how to use this bot, explain that they can report loss, track claims, build documents, or calculate premiums from the 'menu'.
+3. Keep answers concise (under 400 chars) and WhatsApp-friendly.
+4. Speak in the user's selected language (default to simple Hinglish/Hindi).
+5. Always end by reminding them they can type "menu" to go back to the Main Menu.
+
+Current User Language: {language}
+User Query: {query}
+Respond directly to their query:`,
+
+    _Translator: `You are a precise translation engine for an Indian crop insurance chatbot.
+
+Translate the input text into the requested target language.
+
+Rules:
+- Preserve meaning, formatting, numbering, bullet markers, and line breaks.
+- Preserve claim IDs, phone numbers, URLs, dates, currency values, and text inside double quotes exactly.
+- Keep command words inside double quotes unchanged, for example "menu", "back", "skip", "done", "save", "submit".
+- Keep JSON punctuation and markdown characters intact.
+- Do not add commentary.
+- If the target language is English, return the text unchanged.
+
+Return only the translated text.`,
 });
 
 
@@ -290,6 +422,46 @@ async function _Generate_Response(_Context, _User_Message, _Language = 'hi') {
         return _Language === 'en'
             ? 'I\'m having trouble understanding. Could you please try again?'
             : 'Mujhe samajhne mein dikkat ho rahi hai. Kripya dobara try karein.';
+    }
+}
+
+/**
+ * Translate chatbot copy into the selected language.
+ * Translation is cached per warm Lambda container to reduce repeated Bedrock calls.
+ *
+ * @param {string} _Text - source text
+ * @param {string} _Language - target language code
+ * @returns {string} translated text
+ */
+async function _Translate_Text(_Text, _Language = 'en') {
+    if (!_Text || typeof _Text !== 'string') return _Text;
+    if (_Language === 'en') return _Text;
+
+    const _Cache_Key = `${_Language}::${_Text}`;
+    if (_Translation_Cache.has(_Cache_Key)) {
+        return _Translation_Cache.get(_Cache_Key);
+    }
+
+    const _Lang_Map = {
+        hi: 'Hindi',
+        mr: 'Marathi',
+        te: 'Telugu',
+        ta: 'Tamil',
+        gu: 'Gujarati',
+        kn: 'Kannada',
+        en: 'English',
+    };
+    const _Target_Name = _Lang_Map[_Language] || 'Hindi';
+    const _Prompt = `Target language: ${_Target_Name} (${_Language})\n\nText:\n${_Text}`;
+
+    try {
+        const _Translated = await _Invoke_Model(_System_Prompts._Translator, _Prompt, 1024);
+        const _Value = (_Translated || _Text).trim() || _Text;
+        _Translation_Cache.set(_Cache_Key, _Value);
+        return _Value;
+    } catch (_Error) {
+        console.error('Translation failed:', _Error.message);
+        return _Text;
     }
 }
 
@@ -515,18 +687,49 @@ ${_Progress_Total > 0 ? `Progress: ${_Progress_Current}/${_Progress_Total} field
 // ─────────────────────────────────────────────────────────────
 module.exports = {
     _Invoke_Model,
+    _Invoke_Model_With_Image,
     _System_Prompts,
     _Detect_Intent,
     _Interpret_Message,
-    _Extract_Claim_Data,
-    _Generate_Claim_Summary,
-    _Generate_Appeal_Letter,
-    _Parse_Date,
-    _Parse_Location,
-    _Generate_Response,
+    _Extract_Claim_Data, // Assuming this exists elsewhere or is a placeholder
+    _Generate_Claim_Summary, // Assuming this exists elsewhere or is a placeholder
+    _Generate_Appeal_Letter, // Assuming this exists elsewhere or is a placeholder
+    _Parse_Date, // Assuming this exists elsewhere or is a placeholder
+    _Parse_Location, // Assuming this exists elsewhere or is a placeholder
+    _Generate_Response, // Assuming this exists elsewhere or is a placeholder
+    _Translate_Text,
     // Document Builder Agent
     _Extract_Form_Schema,
     _Auto_Fill_Fields,
     _Generate_Claim_Narrative,
     _Generate_Field_Question,
 };
+
+/**
+ * Handle user queries via the BimaSathi Query Bot
+ * @param {string} _Query — User's question
+ * @param {string} _Language — User's language code
+ * @returns {string} Bot's answer
+ */
+async function _Query_Bot_Message(_Query, _Language) {
+    const _Lang_Map = {
+        'hi': 'Hindi / simple Hinglish',
+        'en': 'English',
+        'mr': 'Marathi',
+        'te': 'Telugu',
+        'ta': 'Tamil',
+        'gu': 'Gujarati',
+        'kn': 'Kannada'
+    };
+
+    const _Lang_Name = _Lang_Map[_Language] || 'Hinglish';
+    const _Prompt = _System_Prompts._Query_Bot_Responder.replace('{language}', _Lang_Name).replace('{query}', _Query);
+
+    try {
+        return await _Invoke_Model(_Prompt, '', 512);
+    } catch (_Err) {
+        console.error('Query Bot error:', _Err.message);
+        return _Language === 'en' ? 'I am currently unable to answer this question. Please type "menu" to go back.' : 'Abhi main is sawal ka jawab nahi de sakta. Wapas jaane ke liye "menu" type karein.';
+    }
+}
+module.exports._Query_Bot_Message = _Query_Bot_Message;

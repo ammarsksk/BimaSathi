@@ -99,16 +99,17 @@ async function _Upload_Audio(_Claim_Id, _Audio_Index, _Buffer, _Content_Type = '
  * @param {string} _Claim_Id — parent claim
  * @param {string} _Filename — e.g. "claim_form.pdf"
  * @param {Buffer} _Buffer — file data
+ * @param {string} _Content_Type — MIME type for the stored object
  * @returns {string} S3 key
  */
-async function _Upload_Document(_Claim_Id, _Filename, _Buffer) {
+async function _Upload_Document(_Claim_Id, _Filename, _Buffer, _Content_Type = 'application/pdf') {
     const _Key = `claims/${_Claim_Id}/documents/${_Filename}`;
 
     await _S3_Client.send(new PutObjectCommand({
         Bucket: _Bucket_Name,
         Key: _Key,
         Body: _Buffer,
-        ContentType: 'application/pdf',
+        ContentType: _Content_Type,
         ServerSideEncryption: 'aws:kms',
     }));
 

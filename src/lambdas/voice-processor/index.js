@@ -9,10 +9,10 @@ const { TranscribeClient, StartTranscriptionJobCommand,
     GetTranscriptionJobCommand } = require('@aws-sdk/client-transcribe');
 const { PollyClient, SynthesizeSpeechCommand } = require('@aws-sdk/client-polly');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-const { _Download_Media } = require('../../shared/twilio');
+const { randomUUID: _Generate_UUID } = require('crypto');
+const { _Download_Media } = require('../../shared/whatsapp');
 const { _Get_Language_Config } = require('../../shared/languages');
 const _S3_Helper = require('../../shared/s3');
-const { v4: _Generate_UUID } = require('uuid');
 
 const _Transcribe_Client = new TranscribeClient({ region: process.env.TRANSCRIBE_REGION || 'ap-south-1' });
 const _Polly_Client = new PollyClient({ region: process.env.POLLY_REGION || 'ap-south-1' });
@@ -46,7 +46,7 @@ async function _Process_Voice(_Media_Data, _Language = 'hi', _Claim_Id = null) {
 
     try {
         // Step 1: Download audio from Twilio
-        const { buffer: _Audio_Buffer, contentType: _Content_Type } = await _Download_Media(_Media_Data.url);
+        const { buffer: _Audio_Buffer, contentType: _Content_Type } = await _Download_Media(_Media_Data.id);
         console.log(`Downloaded audio: ${_Audio_Buffer.length} bytes, type: ${_Content_Type}`);
 
         // Step 2: Upload to S3 temp folder for Transcribe

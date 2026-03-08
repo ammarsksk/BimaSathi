@@ -7,7 +7,7 @@
  */
 
 const _DB = require('../../shared/dynamodb');
-const { _Send_Text_Message } = require('../../shared/twilio');
+const { _Send_Text_Message } = require('../../shared/whatsapp');
 const { _Claim_Status } = require('../../shared/constants');
 
 

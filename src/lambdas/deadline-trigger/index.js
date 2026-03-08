@@ -9,7 +9,7 @@
  */
 
 const _DB = require('../../shared/dynamodb');
-const { _Send_Text_Message } = require('../../shared/twilio');
+const { _Send_Text_Message } = require('../../shared/whatsapp');
 const { _Get_Template, _Fill_Template, _Template_Keys } = require('../../shared/languages');
 const { _Deadline_Config, _Claim_Status } = require('../../shared/constants');
 const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');

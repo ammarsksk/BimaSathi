@@ -11,13 +11,14 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, PutCommand,
     UpdateCommand, QueryCommand, ScanCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
+const { randomUUID: _Generate_UUID } = require('crypto');
 const { _Table_Names, _Completeness_Weights, _Claim_Status } = require('./constants');
-const { v4: _Generate_UUID } = require('uuid');
 
 const _Dynamo_Client = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 const _Doc_Client = DynamoDBDocumentClient.from(_Dynamo_Client, {
     marshallOptions: { removeUndefinedValues: true },
 });
+const _ACTIVE_CONVERSATION_SESSION_ID = 'ACTIVE';
 
 
 // ═════════════════════════════════════════════════════════════
@@ -211,11 +212,14 @@ async function _Create_Claim(_Claim_Data) {
         areaHectares: _Claim_Data.areaHectares || null,
         policyType: _Claim_Data.policyType || null,
         bankLast4: _Claim_Data.bankLast4 || null,
+        documentCount: _Claim_Data.documentCount || 0,
         photoCount: _Claim_Data.photoCount || 0,
         approvedPhotoCount: _Claim_Data.approvedPhotoCount || 0,
         status: _Claim_Status.DRAFT,
         deadline: _Claim_Data.deadline || null,
         gpsCoords: _Claim_Data.gpsCoords || null,
+        draftState: _Claim_Data.draftState || null,
+        draftContext: _Claim_Data.draftContext || null,
         createdAt: _Now,
         lastUpdated: _Now,
     };
@@ -267,14 +271,20 @@ async function _Update_Claim(_Claim_Id, _User_Id, _Updates) {
  */
 async function _Get_Conversation(_Phone_Number) {
     const _Clean = _Phone_Number.replace('whatsapp:', '').replace(/\s/g, '');
-    const _Result = await _Doc_Client.send(new QueryCommand({
+    const _Active = await _Doc_Client.send(new GetCommand({
+        TableName: _Table_Names.CONVERSATIONS,
+        Key: { phoneNumber: _Clean, sessionId: _ACTIVE_CONVERSATION_SESSION_ID },
+    }));
+    if (_Active.Item) return _Active.Item;
+
+    const _Fallback = await _Doc_Client.send(new QueryCommand({
         TableName: _Table_Names.CONVERSATIONS,
         KeyConditionExpression: 'phoneNumber = :phone',
         ExpressionAttributeValues: { ':phone': _Clean },
         ScanIndexForward: false,
         Limit: 1,
     }));
-    return _Result.Items?.[0] || null;
+    return _Fallback.Items?.[0] || null;
 }
 
 /**
@@ -289,7 +299,7 @@ async function _Upsert_Conversation(_Conversation) {
         TableName: _Table_Names.CONVERSATIONS,
         Item: {
             phoneNumber: _Clean_Phone,
-            sessionId: _Conversation.sessionId || _Generate_UUID(),
+            sessionId: _ACTIVE_CONVERSATION_SESSION_ID,
             state: _Conversation.state,
             context: _Conversation.context || {},
             language: _Conversation.language || 'hi',
@@ -297,6 +307,105 @@ async function _Upsert_Conversation(_Conversation) {
             ttl: _Ttl,
         },
     }));
+}
+
+/**
+ * Update claim status and any related fields in a single call.
+ * This is used by save/resume/submit flows so draft metadata is stored consistently.
+ */
+async function _Update_Claim_Status(_Claim_Id, _User_Id, _Status, _Updates = {}) {
+    await _Update_Claim(_Claim_Id, _User_Id, {
+        status: _Status,
+        ..._Updates,
+    });
+}
+
+/**
+ * Delete a single claim draft.
+ */
+async function _Delete_Claim(_Claim_Id, _User_Id) {
+    await _Doc_Client.send(new DeleteCommand({
+        TableName: _Table_Names.CLAIMS,
+        Key: { claimId: _Claim_Id, userId: _User_Id },
+    }));
+}
+
+/**
+ * Reserve the next photo slot for a claim and deduplicate by WhatsApp message SID.
+ * Returns the up-to-date counters after the reservation.
+ */
+async function _Begin_Photo_Processing(_Claim_Id, _User_Id, _Message_Sid) {
+    const _Params = {
+        TableName: _Table_Names.CLAIMS,
+        Key: { claimId: _Claim_Id, userId: _User_Id },
+        UpdateExpression: 'ADD #photoCount :one, #photoSids :sidSet SET #lastUpdated = :ts',
+        ExpressionAttributeNames: {
+            '#photoCount': 'photoCount',
+            '#photoSids': 'processedPhotoSids',
+            '#lastUpdated': 'lastUpdated',
+        },
+        ExpressionAttributeValues: {
+            ':one': 1,
+            ':sidSet': new Set([_Message_Sid]),
+            ':sid': _Message_Sid,
+            ':ts': new Date().toISOString(),
+        },
+        ConditionExpression: 'attribute_not_exists(#photoSids) OR NOT contains(#photoSids, :sid)',
+        ReturnValues: 'ALL_NEW',
+    };
+
+    try {
+        const _Result = await _Doc_Client.send(new UpdateCommand(_Params));
+        return {
+            alreadyProcessed: false,
+            claim: _Result.Attributes || {},
+            photoIndex: _Result.Attributes?.photoCount || 1,
+        };
+    } catch (_Error) {
+        if (_Error.name === 'ConditionalCheckFailedException') {
+            const _Claim = await _Get_Claim_By_Id(_Claim_Id);
+            return {
+                alreadyProcessed: true,
+                claim: _Claim || {},
+                photoIndex: _Claim?.photoCount || 0,
+            };
+        }
+        throw _Error;
+    }
+}
+
+/**
+ * Finalize a processed photo and increment approved-photo count only once.
+ */
+async function _Finalize_Photo_Processing(_Claim_Id, _User_Id, _Message_Sid, _Approved) {
+    if (_Approved) {
+        try {
+            const _Result = await _Doc_Client.send(new UpdateCommand({
+                TableName: _Table_Names.CLAIMS,
+                Key: { claimId: _Claim_Id, userId: _User_Id },
+                UpdateExpression: 'ADD #approvedCount :one, #approvedSids :sidSet SET #lastUpdated = :ts',
+                ExpressionAttributeNames: {
+                    '#approvedCount': 'approvedPhotoCount',
+                    '#approvedSids': 'approvedPhotoSids',
+                    '#lastUpdated': 'lastUpdated',
+                },
+                ExpressionAttributeValues: {
+                    ':one': 1,
+                    ':sidSet': new Set([_Message_Sid]),
+                    ':sid': _Message_Sid,
+                    ':ts': new Date().toISOString(),
+                },
+                ConditionExpression: 'attribute_not_exists(#approvedSids) OR NOT contains(#approvedSids, :sid)',
+                ReturnValues: 'ALL_NEW',
+            }));
+            return _Result.Attributes || {};
+        } catch (_Error) {
+            if (_Error.name !== 'ConditionalCheckFailedException') throw _Error;
+        }
+    }
+
+    const _Claim = await _Get_Claim_By_Id(_Claim_Id);
+    return _Claim || {};
 }
 
 
@@ -496,19 +605,25 @@ async function _Update_Field_Status(_Claim_Id, _User_Id, _Field_Name, _Status, _
  * @param {Object} _Doc_Meta — { type, s3Key, extractedText, keyValues, classifiedAt }
  */
 async function _Store_Document_Metadata(_Claim_Id, _User_Id, _Doc_Meta) {
-    const _Claim = await _Get_Claim_By_Id(_Claim_Id);
-    const _Docs = _Claim?.documentsReceived || [];
-    _Docs.push({
-        ..._Doc_Meta,
-        receivedAt: new Date().toISOString(),
-    });
-
     await _Doc_Client.send(new UpdateCommand({
         TableName: _Table_Names.CLAIMS,
         Key: { claimId: _Claim_Id, userId: _User_Id },
-        UpdateExpression: 'SET #dr = :docs, #lu = :ts',
-        ExpressionAttributeNames: { '#dr': 'documentsReceived', '#lu': 'lastUpdated' },
-        ExpressionAttributeValues: { ':docs': _Docs, ':ts': new Date().toISOString() },
+        UpdateExpression: 'SET #dr = list_append(if_not_exists(#dr, :emptyDocs), :newDoc), #lu = :ts, #docCount = if_not_exists(#docCount, :zero) + :one',
+        ExpressionAttributeNames: {
+            '#dr': 'documentsReceived',
+            '#lu': 'lastUpdated',
+            '#docCount': 'documentCount',
+        },
+        ExpressionAttributeValues: {
+            ':emptyDocs': [],
+            ':newDoc': [{
+                ..._Doc_Meta,
+                receivedAt: new Date().toISOString(),
+            }],
+            ':zero': 0,
+            ':one': 1,
+            ':ts': new Date().toISOString(),
+        },
     }));
 }
 
@@ -558,6 +673,10 @@ module.exports = {
     _Get_All_Claims,
     _Create_Claim,
     _Update_Claim,
+    _Update_Claim_Status,
+    _Delete_Claim,
+    _Begin_Photo_Processing,
+    _Finalize_Photo_Processing,
 
     // Conversations
     _Get_Conversation,

@@ -3,6 +3,9 @@ node_modules/
 
 # AWS SAM build artifacts
 .aws-sam/
+.sam-appdata/
+.sam-temp/
+.sam-runtime/
 
 # Environment variables (contains secrets!)
 .env

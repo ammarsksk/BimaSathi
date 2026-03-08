@@ -9,9 +9,10 @@
  *   - refresh_token:      Refresh expired Cognito tokens
  */
 
+const crypto = require('crypto');
 const { CognitoIdentityProviderClient, AdminCreateUserCommand,
-    AdminInitiateAuthCommand } = require('@aws-sdk/client-cognito-identity-provider');
-const { _Send_OTP, _Verify_OTP } = require('../../shared/twilio');
+    AdminInitiateAuthCommand, AdminSetUserPasswordCommand } = require('@aws-sdk/client-cognito-identity-provider');
+const { _Send_OTP, _Verify_OTP, _Format_Phone } = require('../../shared/twilio');
 const _DB = require('../../shared/dynamodb');
 
 const _Cognito_Client = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION || 'ap-south-1' });
@@ -62,11 +63,13 @@ async function _Handle_Verify_OTP(_Phone_Number, _Code, _Role = 'farmer') {
     let _User = await _DB._Get_User(_Clean_Phone);
     if (!_User) {
         _User = await _DB._Create_User({ phoneNumber: _Clean_Phone, role: _Role });
-        await _Create_Cognito_User(_Clean_Phone, _Formatted, _Role);
     }
 
-    // Issue tokens
-    const _Tokens = await _Issue_Tokens(_Clean_Phone);
+    await _Create_Cognito_User(_Clean_Phone, _Formatted, _Role);
+
+    // Issue real Cognito tokens using a backend-managed password after OTP verification.
+    const _Session_Password = await _Rotate_Cognito_Password(_Clean_Phone);
+    const _Tokens = await _Issue_Tokens(_Clean_Phone, _Session_Password);
 
     // Audit trail
     await _DB._Log_Audit({
@@ -144,11 +147,6 @@ async function _Handle_Refresh_Token(_Refresh_Token) {
 //  INTERNAL HELPERS
 // ═════════════════════════════════════════════════════════════
 
-function _Format_Phone(_Number) {
-    const _Clean = _Number.replace('whatsapp:', '').replace(/\s/g, '');
-    return _Clean.startsWith('+') ? _Clean : `+91${_Clean}`;
-}
-
 async function _Create_Cognito_User(_Clean_Phone, _Formatted_Phone, _Role) {
     try {
         await _Cognito_Client.send(new AdminCreateUserCommand({
@@ -168,13 +166,27 @@ async function _Create_Cognito_User(_Clean_Phone, _Formatted_Phone, _Role) {
     }
 }
 
-async function _Issue_Tokens(_Clean_Phone) {
+async function _Rotate_Cognito_Password(_Clean_Phone) {
+    const _Password = _Generate_Service_Password();
+    await _Cognito_Client.send(new AdminSetUserPasswordCommand({
+        UserPoolId: _User_Pool_Id,
+        Username: _Clean_Phone,
+        Password: _Password,
+        Permanent: true,
+    }));
+    return _Password;
+}
+
+async function _Issue_Tokens(_Clean_Phone, _Password) {
     try {
         const _Auth_Result = await _Cognito_Client.send(new AdminInitiateAuthCommand({
             UserPoolId: _User_Pool_Id,
             ClientId: _Client_Id,
-            AuthFlow: 'CUSTOM_AUTH',
-            AuthParameters: { USERNAME: _Clean_Phone },
+            AuthFlow: 'ADMIN_USER_PASSWORD_AUTH',
+            AuthParameters: {
+                USERNAME: _Clean_Phone,
+                PASSWORD: _Password,
+            },
         }));
         return _Auth_Result.AuthenticationResult;
     } catch (_Error) {
@@ -185,6 +197,11 @@ async function _Issue_Tokens(_Clean_Phone) {
             ExpiresIn: 86400,
         };
     }
+}
+
+function _Generate_Service_Password() {
+    const _Random = crypto.randomBytes(18).toString('base64').replace(/[^A-Za-z0-9]/g, 'A');
+    return `Bms!${_Random}9`;
 }
 
 function _API_Response(_Status_Code, _Body) {

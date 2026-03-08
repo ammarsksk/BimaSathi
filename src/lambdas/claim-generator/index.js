@@ -14,11 +14,53 @@ const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 const _S3_Helper = require('../../shared/s3');
 const _Bedrock = require('../../shared/bedrock');
 const _DB = require('../../shared/dynamodb');
+const _WhatsApp = require('../../shared/whatsapp');
 
 exports.handler = async (_Event) => {
     const { claimId, claimData } = _Event;
-    const _Result = await _Generate_Claim_Pack(claimId, claimData);
-    return { statusCode: 200, body: JSON.stringify(_Result) };
+
+    try {
+        const _Result = await _Generate_Claim_Pack(claimId, claimData);
+
+        // ── Since generation can take 10-15s, we notify the user asynchronously ──
+        if (claimData.phoneNumber) {
+            const _Phone = 'whatsapp:' + claimData.phoneNumber;
+            const _Lang = claimData.language || 'hi';
+
+            let _Company_Name = 'Insurance';
+            if (claimData.company) {
+                try {
+                    const { _Company_Templates } = require('../../shared/insurance-templates');
+                    const _Template = _Company_Templates[claimData.company];
+                    if (_Template) _Company_Name = _Template.name;
+                } catch (e) { }
+            }
+
+            let _Done_Msg = `Your ${_Company_Name} claim document is ready.\n\nDownload PDF: ${_Result.presignedUrl}`;
+            if (_Lang !== 'en') {
+                _Done_Msg = await _Bedrock._Translate_Text(_Done_Msg, _Lang);
+            }
+
+            await _WhatsApp._Send_Text_Message(_Phone, _Done_Msg);
+        }
+
+        return { statusCode: 200, body: JSON.stringify(_Result) };
+    } catch (_Error) {
+        console.error('Claim Generation failed:', _Error);
+
+        if (claimData.phoneNumber) {
+            const _Phone = 'whatsapp:' + claimData.phoneNumber;
+            const _Lang = claimData.language || 'hi';
+            let _Err_Msg = 'We encountered an error generating your document. Please try again from the claim hub.';
+            if (_Lang !== 'en') {
+                _Err_Msg = await _Bedrock._Translate_Text(_Err_Msg, _Lang);
+            }
+
+            await _WhatsApp._Send_Text_Message(_Phone, _Err_Msg);
+        }
+
+        return { statusCode: 500, body: JSON.stringify({ error: _Error.message }) };
+    }
 };
 
 
@@ -58,10 +100,13 @@ async function _Generate_Claim_Pack(_Claim_Id, _Data) {
     await _S3_Helper._Generate_Evidence_Manifest(_Claim_Id);
     const _Pack_URL = await _S3_Helper._Get_Presigned_URL(_Key_Final, 7 * 24 * 3600);
 
-    // Update claim status to READY_FOR_SUBMISSION
+    // Do not regress a submitted claim back into an intermediate status.
     if (_Data.userId) {
         try {
-            await _DB._Update_Claim(_Claim_Id, _Data.userId, { status: 'Ready for Submission' });
+            const _Existing = await _DB._Get_Claim_By_Id(_Claim_Id);
+            if (_Existing?.status !== 'Submitted') {
+                await _DB._Update_Claim(_Claim_Id, _Data.userId, { status: 'Ready for Submission' });
+            }
         } catch (_Err) {
             console.error('Status update failed:', _Err.message);
         }
@@ -102,29 +147,66 @@ async function _Build_Claim_Form_PDF(_Claim_Id, _D) {
     _Y -= 20;
     _Page.drawText(`Filed via BimaSathi | Claim ID: ${_Claim_Id} | Date: ${new Date().toLocaleDateString('en-IN')}`, { x: 50, y: _Y, size: 9, font: _Font, color: _Green });
     _Y -= 30;
-
     // Section A: Farmer Details
-    _Y = _Draw_Section_Header(_Page, 'SECTION A: FARMER DETAILS', _Y, _Bold, _Blue);
-    const _Farmer_Fields = [
-        ['Full Name', _D.farmerName], ['Village', _D.village], ['District', _D.district],
-        ['State', _D.state], ['Phone', _D.phoneNumber], ['Bank A/C (Last 4)', _D.bankLast4 ? `****${_D.bankLast4}` : 'N/A'],
-    ];
-    for (const [_Lbl, _Val] of _Farmer_Fields) { _Y = _Draw_Form_Field(_Page, _Lbl, _Val || 'N/A', _Y, _Font, _Bold); }
-    _Y -= 15;
+    _Y = _Draw_Section_Header(_Page, 'SECTION A: CLAIMANT INFORMATION', _Y, _Bold, _Blue);
 
-    // Section B: Crop & Loss Details
-    _Y = _Draw_Section_Header(_Page, 'SECTION B: CROP & LOSS DETAILS', _Y, _Bold, _Blue);
-    const _Crop_Fields = [
-        ['Crop Type', _Capitalize(_D.cropType)], ['Season', _Capitalize(_D.season)],
-        ['Date of Loss', _D.lossDate || 'N/A'], ['Cause of Loss', _Capitalize((_D.cause || '').replace(/_/g, ' '))],
-        ['Area Affected', _D.areaHectares ? `${_D.areaHectares} hectares` : 'N/A'],
-        ['Insurance Scheme', (_D.policyType || 'PMFBY').toUpperCase()],
-    ];
-    for (const [_Lbl, _Val] of _Crop_Fields) { _Y = _Draw_Form_Field(_Page, _Lbl, _Val || 'N/A', _Y, _Font, _Bold); }
+    // Check if we have a dynamic form schema or a selected company
+    let _Schema = _D.formSchema || [];
+
+    if (_D.company) {
+        try {
+            const { _Company_Templates } = require('../../shared/insurance-templates');
+            const _Template = _Company_Templates[_D.company];
+            if (_Template) {
+                _Page.drawText(`Company: ${_Template.name}`, { x: 50, y: _Y, size: 10, font: _Bold, color: _Text });
+                _Y -= 20;
+                _Schema = _Template.fields.map(f => ({
+                    field_name: f.label,
+                    value: _D[f.key] ? String(_D[f.key]) : 'N/A'
+                }));
+            }
+        } catch (e) { console.error('Error loading company templates:', e); }
+    }
+
+    if (_Schema.length > 0) {
+        // Group fields into two columns to save space
+        const _Fields = _Schema.map(f => [
+            _Capitalize(f.field_name.replace(/_/g, ' ')),
+            f.value ? String(f.value) : '________________'
+        ]);
+
+        // Draw fields row by row (2 per row if short enough, else 1)
+        for (let i = 0; i < _Fields.length; i++) {
+            const [_Lbl, _Val] = _Fields[i];
+            _Y = _Draw_Form_Field(_Page, _Lbl, _Val, _Y, _Font, _Bold);
+            if (_Y < 100) {
+                // basic pagination protection (ideally would add a new page, but this fits most forms)
+                _Page.drawText('... (Continued on next page)', { x: 50, y: 50, size: 9, font: _Font, color: _Text });
+                break;
+            }
+        }
+    } else {
+        // Fallback to legacy hardcoded fields if no schema exists
+        const _Farmer_Fields = [
+            ['Full Name', _D.farmerName], ['Village', _D.village], ['District', _D.district],
+            ['State', _D.state], ['Phone', _D.phoneNumber], ['Bank A/C (Last 4)', _D.bankLast4 ? `****${_D.bankLast4}` : 'N/A'],
+        ];
+        for (const [_Lbl, _Val] of _Farmer_Fields) { _Y = _Draw_Form_Field(_Page, _Lbl, _Val || 'N/A', _Y, _Font, _Bold); }
+        _Y -= 15;
+
+        _Y = _Draw_Section_Header(_Page, 'SECTION B: CROP & LOSS DETAILS', _Y, _Bold, _Blue);
+        const _Crop_Fields = [
+            ['Crop Type', _Capitalize(_D.cropType)], ['Season', _Capitalize(_D.season)],
+            ['Date of Loss', _D.lossDate || 'N/A'], ['Cause of Loss', _Capitalize((_D.cause || '').replace(/_/g, ' '))],
+            ['Area Affected', _D.areaHectares ? `${_D.areaHectares} hectares` : 'N/A'],
+            ['Insurance Scheme', (_D.policyType || 'PMFBY').toUpperCase()],
+        ];
+        for (const [_Lbl, _Val] of _Crop_Fields) { _Y = _Draw_Form_Field(_Page, _Lbl, _Val || 'N/A', _Y, _Font, _Bold); }
+    }
     _Y -= 15;
 
     // Section C: Filing Info
-    _Y = _Draw_Section_Header(_Page, 'SECTION C: FILING INFORMATION', _Y, _Bold, _Blue);
+    _Y = _Draw_Section_Header(_Page, 'SECTION B: FILING INFORMATION', _Y, _Bold, _Blue);
     _Y = _Draw_Form_Field(_Page, 'Filing Deadline', _D.deadline ? new Date(_D.deadline).toLocaleString('en-IN') : 'N/A', _Y, _Font, _Bold);
     _Y = _Draw_Form_Field(_Page, 'Filed via', 'BimaSathi WhatsApp AI', _Y, _Font, _Bold);
     _Y = _Draw_Form_Field(_Page, 'Evidence Photos', `${_D.approvedPhotoCount || 0} (AI-verified)`, _Y, _Font, _Bold);

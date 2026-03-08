@@ -4,11 +4,12 @@ Description: BimaSathi — WhatsApp-first AI Crop Insurance Claim Assistant
 
 Globals:
   Function:
-    Runtime: nodejs18.x
+    Runtime: nodejs22.x
     Timeout: 300
     MemorySize: 512
     Environment:
       Variables:
+        NODE_ENV: !Ref NodeEnvironment
         AWS_REGION_NAME: !Ref AWS::Region
         USERS_TABLE: !Ref UsersTable
         CLAIMS_TABLE: !Ref ClaimsTable
@@ -17,24 +18,66 @@ Globals:
         AUDIT_LOG_TABLE: !Ref AuditLogTable
         CONSENT_TABLE: !Ref ConsentTable
         EVIDENCE_BUCKET: !Ref EvidenceBucket
-        BEDROCK_MODEL_ID: us.amazon.nova-pro-v1:0
-        BEDROCK_REGION: us-east-1
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        BEDROCK_REGION: !Ref BedrockRegion
+        POLLY_REGION: !Ref PollyRegion
+        TRANSCRIBE_REGION: !Ref TranscribeRegion
         COGNITO_USER_POOL_ID: !Ref UserPool
         COGNITO_CLIENT_ID: !Ref UserPoolClient
 
 Parameters:
+  # ── Meta WhatsApp Cloud API Credentials ──
+  MetaAccessToken:
+    Type: String
+    Description: Meta App System User Access Token
+    NoEcho: true
+  MetaPhoneNumberId:
+    Type: String
+    Description: Meta Phone Number ID (e.g., 1059801033876959)
+    NoEcho: true
+  MetaVerifyToken:
+    Type: String
+    Description: Secret token for webhook verification
+    NoEcho: true
+  MetaAppSecret:
+    Type: String
+    Description: Meta App Secret for webhook signature validation
+    Default: ''
+    NoEcho: true
+
+  # ── Twilio Dashboard Auth Credentials ──
   TwilioAccountSid:
     Type: String
+    Description: Twilio Account SID for Dashboard SMS
     NoEcho: true
   TwilioAuthToken:
     Type: String
+    Description: Twilio Auth Token for Dashboard SMS
     NoEcho: true
-  TwilioWhatsAppNumber:
+  TwilioPhoneNumber:
     Type: String
-    Default: 'whatsapp:+14155238886'
-  TwilioVerifyServiceSid:
-    Type: String
+    Description: Twilio Phone Number for Dashboard SMS
     NoEcho: true
+  BedrockRegion:
+    Type: String
+    Description: AWS region used for Bedrock inference
+    Default: us-east-1
+  BedrockModelId:
+    Type: String
+    Description: Bedrock model or inference profile ID
+    Default: us.amazon.nova-pro-v1:0
+  PollyRegion:
+    Type: String
+    Description: AWS region used for Polly
+    Default: ap-south-1
+  TranscribeRegion:
+    Type: String
+    Description: AWS region used for Transcribe
+    Default: ap-south-1
+  NodeEnvironment:
+    Type: String
+    Description: Runtime environment for Lambda functions
+    Default: production
 
 Resources:
   # ═══════════════════════════════════════
@@ -58,18 +101,25 @@ Resources:
       FunctionName: bimasathi-whatsapp-webhook
       Handler: src/lambdas/whatsapp-webhook/index.handler
       Events:
-        Webhook:
+        WebhookPost:
           Type: Api
           Properties:
             RestApiId: !Ref ApiGateway
             Path: /webhook/whatsapp
             Method: post
+        WebhookGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /webhook/whatsapp
+            Method: get
       Environment:
         Variables:
-          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
-          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
-          TWILIO_WHATSAPP_NUMBER: !Ref TwilioWhatsAppNumber
-          TWILIO_VERIFY_SERVICE_SID: !Ref TwilioVerifyServiceSid
+          META_ACCESS_TOKEN: !Ref MetaAccessToken
+          META_PHONE_NUMBER_ID: !Ref MetaPhoneNumberId
+          META_VERIFY_TOKEN: !Ref MetaVerifyToken
+          META_APP_SECRET: !Ref MetaAppSecret
+          CONVERSATION_ENGINE_FUNCTION: !Ref ConversationEngineFunction
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref UsersTable }
         - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
@@ -104,10 +154,13 @@ Resources:
       MemorySize: 1024
       Environment:
         Variables:
-          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
-          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
-          TWILIO_WHATSAPP_NUMBER: !Ref TwilioWhatsAppNumber
-          TWILIO_VERIFY_SERVICE_SID: !Ref TwilioVerifyServiceSid
+          META_ACCESS_TOKEN: !Ref MetaAccessToken
+          META_PHONE_NUMBER_ID: !Ref MetaPhoneNumberId
+          META_VERIFY_TOKEN: !Ref MetaVerifyToken
+          VOICE_PROCESSOR_FUNCTION: !Ref VoiceProcessorFunction
+          PHOTO_PROCESSOR_FUNCTION: !Ref PhotoProcessorFunction
+          CLAIM_GENERATOR_FUNCTION: !Ref ClaimGeneratorFunction
+          APPEAL_GENERATOR_FUNCTION: !Ref AppealGeneratorFunction
           DOCUMENT_INTAKE_FUNCTION: !Ref DocumentIntakeFunction
           FORM_SCHEMA_EXTRACTOR_FUNCTION: !Ref FormSchemaExtractorFunction
           AUTO_FILL_FUNCTION: !Ref AutoFillFunction
@@ -117,6 +170,7 @@ Resources:
         - DynamoDBCrudPolicy: { TableName: !Ref ConversationsTable }
         - DynamoDBCrudPolicy: { TableName: !Ref DeadlinesTable }
         - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref ConsentTable }
         - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
         - Statement:
             - Effect: Allow
@@ -137,16 +191,19 @@ Resources:
           Properties: { RestApiId: !Ref ApiGateway, Path: /auth, Method: post }
       Environment:
         Variables:
+          META_ACCESS_TOKEN: !Ref MetaAccessToken
+          META_PHONE_NUMBER_ID: !Ref MetaPhoneNumberId
+          META_VERIFY_TOKEN: !Ref MetaVerifyToken
           TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
           TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
-          TWILIO_VERIFY_SERVICE_SID: !Ref TwilioVerifyServiceSid
+          TWILIO_PHONE_NUMBER: !Ref TwilioPhoneNumber
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref UsersTable }
         - DynamoDBCrudPolicy: { TableName: !Ref ConsentTable }
         - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
         - Statement:
             - Effect: Allow
-              Action: ['cognito-idp:AdminCreateUser', 'cognito-idp:AdminInitiateAuth']
+              Action: ['cognito-idp:AdminCreateUser', 'cognito-idp:AdminInitiateAuth', 'cognito-idp:AdminSetUserPassword']
               Resource: !GetAtt UserPool.Arn
 
   VoiceProcessorFunction:
@@ -158,9 +215,9 @@ Resources:
       MemorySize: 1024
       Environment:
         Variables:
-          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
-          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
-          TWILIO_WHATSAPP_NUMBER: !Ref TwilioWhatsAppNumber
+          META_ACCESS_TOKEN: !Ref MetaAccessToken
+          META_PHONE_NUMBER_ID: !Ref MetaPhoneNumberId
+          META_VERIFY_TOKEN: !Ref MetaVerifyToken
       Policies:
         - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
         - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
@@ -178,14 +235,18 @@ Resources:
       MemorySize: 1024
       Environment:
         Variables:
-          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
-          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          META_ACCESS_TOKEN: !Ref MetaAccessToken
+          META_PHONE_NUMBER_ID: !Ref MetaPhoneNumberId
       Policies:
         - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
         - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
         - Statement:
             - Effect: Allow
               Action: ['rekognition:DetectLabels', 'rekognition:DetectModerationLabels']
+              Resource: '*'
+            - Effect: Allow
+              Action: ['bedrock:InvokeModel', 'bedrock:Converse']
               Resource: '*'
 
   ClaimGeneratorFunction:
@@ -194,6 +255,12 @@ Resources:
       FunctionName: bimasathi-claim-generator
       Handler: src/lambdas/claim-generator/index.handler
       MemorySize: 1024
+      Timeout: 60
+      Environment:
+        Variables:
+          META_ACCESS_TOKEN: !Ref MetaAccessToken
+          META_PHONE_NUMBER_ID: !Ref MetaPhoneNumberId
+          META_VERIFY_TOKEN: !Ref MetaVerifyToken
       Policies:
         - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
         - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
@@ -216,9 +283,9 @@ Resources:
             Enabled: true
       Environment:
         Variables:
-          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
-          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
-          TWILIO_WHATSAPP_NUMBER: !Ref TwilioWhatsAppNumber
+          META_ACCESS_TOKEN: !Ref MetaAccessToken
+          META_PHONE_NUMBER_ID: !Ref MetaPhoneNumberId
+          META_VERIFY_TOKEN: !Ref MetaVerifyToken
           APPEAL_GENERATOR_FUNCTION: !Ref AppealGeneratorFunction
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
@@ -241,9 +308,16 @@ Resources:
           Properties:
             Schedule: rate(24 hours)
             Enabled: true
+      Environment:
+        Variables:
+          META_ACCESS_TOKEN: !Ref MetaAccessToken
+          META_PHONE_NUMBER_ID: !Ref MetaPhoneNumberId
+          META_VERIFY_TOKEN: !Ref MetaVerifyToken
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
         - DynamoDBCrudPolicy: { TableName: !Ref DeadlinesTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref UsersTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
 
   AppealGeneratorFunction:
     Type: AWS::Serverless::Function
@@ -253,6 +327,7 @@ Resources:
       Policies:
         - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
         - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
         - Statement:
             - Effect: Allow
               Action: ['bedrock:InvokeModel', 'bedrock:Converse']
@@ -270,8 +345,8 @@ Resources:
       MemorySize: 1024
       Environment:
         Variables:
-          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
-          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          META_ACCESS_TOKEN: !Ref MetaAccessToken
+          META_PHONE_NUMBER_ID: !Ref MetaPhoneNumberId
       Policies:
         - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
         - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
@@ -505,6 +580,7 @@ Resources:
       ClientName: bimasathi-dashboard
       UserPoolId: !Ref UserPool
       ExplicitAuthFlows:
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
         - ALLOW_CUSTOM_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
       TokenValidityUnits:
@@ -545,7 +621,7 @@ Outputs:
     Description: API Gateway endpoint URL
     Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod'
   WhatsAppWebhookUrl:
-    Description: Twilio webhook URL for WhatsApp
+    Description: Meta WhatsApp webhook URL
     Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/webhook/whatsapp'
   EvidenceBucketName:
     Description: S3 bucket for evidence storage

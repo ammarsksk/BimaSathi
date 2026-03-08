@@ -1,0 +1,3 @@
+/jump DATE_LOCATION
+05/03/2026
+/exit

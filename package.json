@@ -5,9 +5,12 @@
     "private": true,
     "scripts": {
         "lint": "eslint src/",
-        "validate": "sam validate",
-        "deploy": "sam deploy --guided",
-        "build": "sam build"
+        "validate": "powershell -ExecutionPolicy Bypass -File .\\scripts\\sam.ps1 validate",
+        "build": "powershell -ExecutionPolicy Bypass -File .\\scripts\\sam.ps1 build",
+        "deploy:guided": "powershell -ExecutionPolicy Bypass -File .\\scripts\\sam.ps1 deploy --guided --config-env default",
+        "deploy": "powershell -ExecutionPolicy Bypass -File .\\scripts\\sam.ps1 deploy --config-env default",
+        "sync": "powershell -ExecutionPolicy Bypass -File .\\scripts\\sam.ps1 sync --watch --config-env default",
+        "deploy:watch": "powershell -ExecutionPolicy Bypass -File .\\scripts\\deploy-watch.ps1"
     },
     "dependencies": {
         "@aws-sdk/client-bedrock-runtime": "^3.500.0",
@@ -27,6 +30,7 @@
         "crypto": "^1.0.1",
         "exif-reader": "^2.0.0",
         "pdf-lib": "^1.17.1",
+        "rewire": "^9.0.1",
         "sharp": "^0.33.0",
         "twilio": "^4.20.0",
         "uuid": "^9.0.0"

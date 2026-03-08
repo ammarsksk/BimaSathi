@@ -10,6 +10,7 @@
 const { TextractClient, DetectDocumentTextCommand,
     AnalyzeDocumentCommand } = require('@aws-sdk/client-textract');
 const _Bedrock = require('./bedrock');
+const { _Document_Types } = require('./constants');
 
 const _Textract_Client = new TextractClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 const _Bucket = process.env.EVIDENCE_BUCKET || 'bimasathi-evidence';
@@ -20,16 +21,14 @@ const _Bucket = process.env.EVIDENCE_BUCKET || 'bimasathi-evidence';
 // ═════════════════════════════════════════════════════════════
 
 /**
- * Extract raw text from a document stored in S3 using Textract
- * @param {string} _S3_Key — S3 object key (must be in the evidence bucket)
+ * Extract raw text from a document stored in S3 or provided as a Buffer using Textract
+ * @param {string|Buffer} _Input — S3 object key or document bytes
  * @returns {string} Concatenated raw text from all pages
  */
-async function _Extract_Text(_S3_Key) {
+async function _Extract_Text(_Input) {
     try {
         const _Response = await _Textract_Client.send(new DetectDocumentTextCommand({
-            Document: {
-                S3Object: { Bucket: _Bucket, Name: _S3_Key },
-            },
+            Document: _Textract_Document(_Input),
         }));
 
         const _Lines = (_Response.Blocks || [])
@@ -47,15 +46,13 @@ async function _Extract_Text(_S3_Key) {
 
 /**
  * Extract key-value pairs from a form document using Textract AnalyzeDocument
- * @param {string} _S3_Key — S3 object key
+ * @param {string|Buffer} _Input — S3 object key or document bytes
  * @returns {Array<{ key: string, value: string, confidence: number }>} Extracted form fields
  */
-async function _Extract_Key_Values(_S3_Key) {
+async function _Extract_Key_Values(_Input) {
     try {
         const _Response = await _Textract_Client.send(new AnalyzeDocumentCommand({
-            Document: {
-                S3Object: { Bucket: _Bucket, Name: _S3_Key },
-            },
+            Document: _Textract_Document(_Input),
             FeatureTypes: ['FORMS'],
         }));
 
@@ -103,6 +100,9 @@ async function _Extract_Key_Values(_S3_Key) {
  * @returns {string} One of the _Document_Types enum values
  */
 async function _Classify_Document(_Extracted_Text) {
+    const _Heuristic = _Classify_Document_Heuristically(_Extracted_Text);
+    if (_Heuristic) return _Heuristic;
+
     const _System_Prompt = `You are a document classifier for an Indian crop insurance system.
 Given the extracted text from a document, classify it into exactly ONE of these categories:
 
@@ -125,10 +125,11 @@ Return ONLY the classification label, nothing else.`;
             'POLICY_DOCUMENT', 'AADHAAR_OR_ID', 'BANK_PASSBOOK', 'UNKNOWN',
         ];
 
-        return _Valid_Types.includes(_Clean) ? _Clean : 'UNKNOWN';
+        if (_Valid_Types.includes(_Clean) && _Clean !== _Document_Types.UNKNOWN) return _Clean;
+        return _Classify_Document_Heuristically(_Extracted_Text) || _Document_Types.UNKNOWN;
     } catch (_Error) {
         console.error('Document classification failed:', _Error.message);
-        return 'UNKNOWN';
+        return _Classify_Document_Heuristically(_Extracted_Text) || _Document_Types.UNKNOWN;
     }
 }
 
@@ -169,6 +170,85 @@ function _Find_Value_Block(_Key_Block, _Block_Map) {
             }
         }
     }
+    return null;
+}
+
+function _Textract_Document(_Input) {
+    if (Buffer.isBuffer(_Input)) {
+        return { Bytes: _Input };
+    }
+    return {
+        S3Object: { Bucket: _Bucket, Name: _Input },
+    };
+}
+
+function _Classify_Document_Heuristically(_Extracted_Text = '') {
+    const _Text = String(_Extracted_Text || '').toLowerCase();
+    if (!_Text.trim()) return null;
+
+    if (
+        _Text.includes('income tax department')
+        || _Text.includes('permanent account number')
+        || /\b[a-z]{5}\d{4}[a-z]\b/i.test(_Extracted_Text || '')
+        || _Text.includes('govt. of india')
+        || _Text.includes('government of india')
+        || _Text.includes('election commission')
+        || _Text.includes('passport')
+        || _Text.includes('driving licence')
+        || _Text.includes('driving license')
+        || _Text.includes('unique identification authority')
+        || _Text.includes('aadhaar')
+        || _Text.includes('uidai')
+    ) {
+        return _Document_Types.AADHAAR_OR_ID;
+    }
+
+    if (
+        _Text.includes('account number')
+        || _Text.includes('ifsc')
+        || _Text.includes('branch')
+        || _Text.includes('passbook')
+        || _Text.includes('bank statement')
+        || _Text.includes('account holder')
+        || _Text.includes('bank of')
+    ) {
+        return _Document_Types.BANK_PASSBOOK;
+    }
+
+    if (
+        _Text.includes('khasra')
+        || _Text.includes('khatauni')
+        || _Text.includes('khata')
+        || _Text.includes('patta')
+        || _Text.includes('survey number')
+        || _Text.includes('land owner')
+        || _Text.includes('record of rights')
+    ) {
+        return _Document_Types.LAND_RECORD;
+    }
+
+    if (
+        _Text.includes('policy number')
+        || _Text.includes('sum insured')
+        || _Text.includes('insured crop')
+        || _Text.includes('policy schedule')
+        || _Text.includes('insurance policy')
+        || _Text.includes('premium')
+    ) {
+        return _Document_Types.POLICY_DOCUMENT;
+    }
+
+    if (
+        _Text.includes('claim form')
+        || _Text.includes('application form')
+        || _Text.includes('proposal form')
+        || _Text.includes('farmer application')
+        || _Text.includes('pmfby')
+        || _Text.includes('pradhan mantri fasal bima')
+    ) {
+        return _Document_Types.INSURANCE_FORM_TEMPLATE;
+    }
+
     return null;
 }
 

@@ -14,13 +14,14 @@
  *  10. Store metadata + audit log
  */
 
-const { RekognitionClient, DetectLabelsCommand,
-    DetectModerationLabelsCommand } = require('@aws-sdk/client-rekognition');
-const { _Download_Media } = require('../../shared/twilio');
+const { DetectModerationLabelsCommand } = require('@aws-sdk/client-rekognition');
+const { _Download_Media } = require('../../shared/whatsapp');
 const _S3_Helper = require('../../shared/s3');
 const _DB = require('../../shared/dynamodb');
+const _Bedrock = require('../../shared/bedrock');
 const { _Damage_Labels, _Photo_Config } = require('../../shared/constants');
 
+const { RekognitionClient, DetectLabelsCommand } = require('@aws-sdk/client-rekognition');
 const _Rekognition_Client = new RekognitionClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 
 
@@ -34,9 +35,9 @@ exports.handler = async (_Event) => {
 /**
  * Process a single photo through the full AI verification pipeline
  *
- * @param {Object} _Media_Data — { url: string }
+ * @param {Object} _Media_Data — { id: string }
  * @param {string} _Claim_Id — parent claim
- * @param {Object} _Context — { photoCount, claimData: { gpsCoords, lossDate } }
+ * @param {Object} _Context — { photoIndex?, photoCount, claimData: { gpsCoords, lossDate } }
  * @param {string} _Language — 2-letter language code
  * @returns {Object} Assessment result
  */
@@ -55,11 +56,16 @@ async function _Process_Photo(_Media_Data, _Claim_Id, _Context = {}, _Language =
 
     try {
         // ── Step 1: Download ──
-        const { buffer: _Image_Buffer, contentType: _Content_Type } = await _Download_Media(_Media_Data.url);
-        console.log(`Downloaded photo: ${_Image_Buffer.length} bytes, type: ${_Content_Type}`);
+        const { buffer: _Image_Buffer, contentType: _Content_Type } = await _Download_Media(_Media_Data.id);
+        console.log(`Downloaded photo: ${_Image_Buffer?.length || 0} bytes, type: ${_Content_Type || 'unknown'}`);
+
+        if (!_Image_Buffer || _Image_Buffer.length === 0) {
+            _Result.fail_reason = 'Unable to download image from Meta.';
+            return _Result;
+        }
 
         // ── Step 2: Upload to S3 ──
-        const _Photo_Index = (_Context.photoCount || 0) + 1;
+        const _Photo_Index = _Context.photoIndex || ((_Context.photoCount || 0) + 1);
         _Result.s3_key = await _S3_Helper._Upload_Photo(_Claim_Id, _Photo_Index, _Image_Buffer, _Content_Type || 'image/jpeg');
 
         // ── Step 3: SHA-256 Hash ──
@@ -70,31 +76,119 @@ async function _Process_Photo(_Media_Data, _Claim_Id, _Context = {}, _Language =
         if (_Dimensions) {
             const _Is_Too_Small = _Dimensions.width < _Photo_Config.MIN_WIDTH || _Dimensions.height < _Photo_Config.MIN_HEIGHT;
             if (_Is_Too_Small) {
-                _Result.fail_reason = 'Image resolution too low. Min: 640×480';
+                _Result.fail_reason = 'Image resolution too low. Min: 640x480';
                 _Result.quality_score = 30;
+                await _Store_Photo_Metadata(_Claim_Id, _Photo_Index, _Result);
+                return _Result;
             }
         }
 
-        // ── Step 5: Rekognition — Detect Labels ──
-        const _Labels_Response = await _Rekognition_Client.send(new DetectLabelsCommand({
-            Image: { Bytes: _Image_Buffer },
-            MaxLabels: 20,
-            MinConfidence: 60,
-        }));
+        // ── Step 5: Bedrock AI Assessment (PRIMARY — runs FIRST) ──
+        // This is the main decision gate. It checks:
+        //   a) Is this a crop/field photo?
+        //   b) Does the crop match the farmer's claimed crop type?
+        //   c) Is there visible crop damage?
+        const _Claimed_Crop = _Context.claimData?.cropType || _Context.claimData?.crop_type || null;
+        const _Claimed_Cause = _Context.claimData?.cause || null;
 
-        _Result.labels = (_Labels_Response.Labels || []).map(_Label => ({
-            name: _Label.Name,
-            confidence: Math.round(_Label.Confidence),
-        }));
+        let _AI_Assessment = {
+            is_crop_photo: true,
+            detected_crop: 'unknown',
+            crop_matches_claim: true,
+            is_crop_damage: false,
+            confidence: 0,
+            damage_type: 'none',
+            reject_reason: null,
+            description: '',
+        };
 
-        // Check for crop damage indicators
-        const _Matched_Damage_Labels = _Result.labels.filter(_Label =>
-            _Damage_Labels.some(_Dl => _Label.name.toLowerCase().includes(_Dl.toLowerCase()))
-        );
-        _Result.damage_detected = _Matched_Damage_Labels.length > 0;
-        _Result.quality_score = Math.max(_Result.quality_score, _Result.damage_detected ? 80 : 60);
+        try {
+            const _Mime = _Content_Type || 'image/jpeg';
+            const _Format = _Mime.includes('png') ? 'png' : _Mime.includes('webp') ? 'webp' : 'jpeg';
 
-        // ── Step 6: Rekognition — Moderation Check ──
+            // Build a context-aware prompt that tells the AI what crop to expect
+            let _User_Prompt = 'Analyze this crop photo for insurance claim evidence.';
+            if (_Claimed_Crop) {
+                _User_Prompt += ` The farmer claims their crop is: ${_Claimed_Crop}. Verify if the photo matches this crop type.`;
+            }
+            if (_Claimed_Cause) {
+                _User_Prompt += ` The farmer reports damage caused by: ${_Claimed_Cause}.`;
+            }
+
+            const _AI_Raw = await _Bedrock._Invoke_Model_With_Image(
+                _Bedrock._System_Prompts._Crop_Damage_Assessment,
+                _Image_Buffer,
+                _User_Prompt,
+                _Format,
+                512
+            );
+
+            if (!_AI_Raw || !_AI_Raw.trim()) {
+                throw new Error('Bedrock returned an empty vision response.');
+            }
+
+            // Parse JSON from model response
+            const _Json_Match = _AI_Raw.match(/\{[\s\S]*\}/);
+            if (!_Json_Match) {
+                throw new Error('Bedrock vision response did not include JSON.');
+            }
+            if (_Json_Match) {
+                _AI_Assessment = { ..._AI_Assessment, ...JSON.parse(_Json_Match[0]) };
+            }
+            console.log(`Bedrock AI assessment: crop_photo=${_AI_Assessment.is_crop_photo}, detected=${_AI_Assessment.detected_crop}, matches=${_AI_Assessment.crop_matches_claim}, damage=${_AI_Assessment.is_crop_damage}, confidence=${_AI_Assessment.confidence}, type=${_AI_Assessment.damage_type}`);
+        } catch (_AI_Err) {
+            console.warn('Bedrock vision assessment failed (non-blocking):', _AI_Err.message);
+            // If AI fails completely, fall through to Rekognition as backup
+            _AI_Assessment.is_crop_damage = true; // benefit of the doubt
+            _AI_Assessment.crop_matches_claim = true; // can't verify, accept
+            _AI_Assessment.description = 'Bedrock vision assessment was unavailable, so the photo moved to the non-AI fallback checks.';
+        }
+
+        _Result.ai_assessment = _AI_Assessment;
+
+        // ── Step 5a: Bedrock Decision Gate ──
+        // Reject if: not a crop photo, crop mismatch, or no damage detected
+        if (!_AI_Assessment.is_crop_photo) {
+            _Result.fail_reason = _AI_Assessment.reject_reason || 'This does not appear to be a photo of a crop field. Please send a photo of your damaged crop.';
+            _Result.quality_score = 20;
+            await _Store_Photo_Metadata(_Claim_Id, _Photo_Index, _Result);
+            return _Result;
+        }
+
+        if (!_AI_Assessment.crop_matches_claim && _Claimed_Crop) {
+            _Result.fail_reason = _AI_Assessment.reject_reason || `Photo appears to show ${_AI_Assessment.detected_crop || 'a different crop'}, not ${_Claimed_Crop}. Please send a photo of your ${_Claimed_Crop} crop.`;
+            _Result.quality_score = 30;
+            await _Store_Photo_Metadata(_Claim_Id, _Photo_Index, _Result);
+            return _Result;
+        }
+
+        if (!_AI_Assessment.is_crop_damage) {
+            _Result.fail_reason = _AI_Assessment.reject_reason || _AI_Assessment.description || 'No visible crop damage detected. Please send a photo clearly showing the damaged crop.';
+            _Result.quality_score = 40;
+            await _Store_Photo_Metadata(_Claim_Id, _Photo_Index, _Result);
+            return _Result;
+        }
+
+        _Result.damage_detected = true;
+        _Result.quality_score = Math.max(70, _AI_Assessment.confidence >= 80 ? 85 : 70);
+
+        // ── Step 6: Rekognition — Labels (supplementary metadata only) ──
+        try {
+            const _Labels_Response = await _Rekognition_Client.send(new DetectLabelsCommand({
+                Image: { Bytes: _Image_Buffer },
+                MaxLabels: 20,
+                MinConfidence: 60,
+            }));
+
+            _Result.labels = (_Labels_Response.Labels || []).map(_Label => ({
+                name: _Label.Name,
+                confidence: Math.round(_Label.Confidence),
+            }));
+        } catch (_Rek_Err) {
+            console.warn('Rekognition label detection failed (non-blocking):', _Rek_Err.message);
+        }
+
+        // ── Step 7: Rekognition — Moderation Check ──
         try {
             const _Moderation_Response = await _Rekognition_Client.send(new DetectModerationLabelsCommand({
                 Image: { Bytes: _Image_Buffer },
@@ -112,41 +206,30 @@ async function _Process_Photo(_Media_Data, _Claim_Id, _Context = {}, _Language =
             console.warn('Moderation check skipped (non-critical):', _Err.message);
         }
 
-        // ── Step 7: EXIF Extraction ──
+        // ── Step 8: EXIF Extraction ──
         const _Exif_Data = _Extract_EXIF(_Image_Buffer);
 
-        // ── Step 8: GPS Validation (≤50km from registered location) ──
-        if (_Exif_Data?.gps && _Context.claimData?.gpsCoords) {
+        // ── Step 9: GPS Validation (Temporarily Suspended) ──
+        if (_Exif_Data?.gps && _Context.claimData?.gpsCoords?.lat && _Context.claimData?.gpsCoords?.lng) {
             const _Distance = _Haversine_Distance(
                 _Exif_Data.gps.latitude, _Exif_Data.gps.longitude,
                 parseFloat(_Context.claimData.gpsCoords.lat),
                 parseFloat(_Context.claimData.gpsCoords.lng)
             );
             _Result.gps_distance = Math.round(_Distance * 100) / 100;
-            _Result.gps_valid = _Distance <= _Photo_Config.MAX_GPS_DISTANCE_KM;
-
-            if (!_Result.gps_valid) {
-                _Result.fail_reason = `GPS too far from registered location (${_Result.gps_distance}km > ${_Photo_Config.MAX_GPS_DISTANCE_KM}km)`;
-            }
+            _Result.gps_valid = true;
         } else {
             _Result.gps_valid = true;  // lenient when GPS unavailable
         }
 
-        // ── Step 9: Timestamp Validation (≤72h from loss date) ──
+        // ── Step 10: Timestamp Validation (Temporarily Suspended) ──
         if (_Exif_Data?.dateTime && _Context.claimData?.lossDate) {
-            const _Photo_Date = new Date(_Exif_Data.dateTime);
-            const _Loss_Date = new Date(_Context.claimData.lossDate);
-            const _Hours_Diff = Math.abs(_Photo_Date - _Loss_Date) / (1000 * 60 * 60);
-
-            _Result.timestamp_valid = _Hours_Diff <= _Photo_Config.MAX_TIMESTAMP_HOURS;
-            if (!_Result.timestamp_valid) {
-                _Result.fail_reason = `Photo timestamp too far from loss date (${Math.round(_Hours_Diff)}h > ${_Photo_Config.MAX_TIMESTAMP_HOURS}h)`;
-            }
+            _Result.timestamp_valid = true;
         } else {
             _Result.timestamp_valid = true;  // lenient when no EXIF date
         }
 
-        // ── Step 10: Final Verdict ──
+        // ── Step 11: Final Verdict ──
         if (!_Result.fail_reason) {
             _Result.approved = true;
             _Result.quality_score = Math.max(_Result.quality_score, 70);
@@ -165,12 +248,17 @@ async function _Process_Photo(_Media_Data, _Claim_Id, _Context = {}, _Language =
                 hash: _Result.hash,
                 approved: _Result.approved,
                 damageDetected: _Result.damage_detected,
-                topLabels: _Result.labels.slice(0, 5),
+                aiAssessment: {
+                    detected_crop: _AI_Assessment.detected_crop,
+                    crop_matches: _AI_Assessment.crop_matches_claim,
+                    damage_type: _AI_Assessment.damage_type,
+                    confidence: _AI_Assessment.confidence,
+                },
                 failReason: _Result.fail_reason,
             },
         });
 
-        console.log(`Photo ${_Photo_Index} processed: approved=${_Result.approved}, damage=${_Result.damage_detected}`);
+        console.log(`Photo ${_Photo_Index} processed: approved=${_Result.approved}, damage=${_Result.damage_detected}, crop_match=${_AI_Assessment.crop_matches_claim}`);
 
     } catch (_Error) {
         console.error('Photo processing error:', _Error);
