@@ -9,10 +9,21 @@ node_modules/
 
 # Environment variables (contains secrets!)
 .env
+.env.*
+!.env.example
 dashboard/.env
+dashboard/.env.*
+!dashboard/.env.example
 
 # SAM deploy config (contains secrets!)
 samconfig.toml
+samconfig.*.toml
+
+# Common local secret/certificate files
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Misc
 stack-events.json
