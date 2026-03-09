@@ -5,7 +5,10 @@ const _WhatsApp = require('../../shared/whatsapp');
 const _Bedrock = require('../../shared/bedrock');
 const _Calculator = require('../../shared/calculator');
 const _Identity = require('../../shared/identity');
+const _Template_Schema = require('../../shared/template-schema');
+const { _Get_Template } = require('../../shared/insurance-templates');
 const { _Supported_Languages } = require('../../shared/languages');
+const _Voice_Intent_Schema = require('../../shared/voice-intent-schema.json');
 const {
     _Conversation_States: _States,
     _Claim_Status,
@@ -35,6 +38,7 @@ const _ACTIVE_CLAIM_STATES = new Set([
     _States.CLAIM_CROP_DETAILS,
     _States.CLAIM_DATE_LOCATION,
     _States.CLAIM_DOCUMENTS,
+    _States.CLAIM_TEMPLATE_SELECT,
     _States.CLAIM_MISSING_FIELDS,
     _States.CLAIM_PHOTOS,
     _States.CLAIM_REVIEW,
@@ -151,14 +155,17 @@ exports.handler = async (_Event) => {
 };
 
 function _Normalize_Incoming(_Event = {}) {
+    const _Type = _Normalize_Type(_Event.type);
     return {
         from: _Clean_Phone(_Event.from || ''),
-        type: _Normalize_Type(_Event.type),
+        type: _Type,
         text: typeof _Event.body === 'string' ? _Event.body.trim() : '',
         rawText: typeof _Event.body === 'string' ? _Event.body : '',
         mediaData: _Event.media_data || null,
         location: _Event.location || null,
         messageSid: _Event.message_sid || null,
+        originalType: _Type,
+        inputSource: _Type === 'voice' ? 'voice' : 'text',
     };
 }
 
@@ -299,11 +306,18 @@ async function _Attach_Identity(_Session) {
 
 async function _Normalize_Event_Content(_Event, _Session) {
     if (_Event.type !== 'voice' || !_Event.mediaData?.id) return _Event;
-    const _Transcript = await _Invoke_Voice(_Event.mediaData, _Session.language, _Session.context.activeClaimId);
-    if (!_Transcript) {
-        return { abort: true, messages: _With_Current_Prompt(_Session, 'I could not understand that voice note. Please send text, or send the voice note again.') };
+    const _Voice_Result = await _Invoke_Voice(_Event.mediaData, _Session.language, _Session.context.activeClaimId);
+    if (!_Voice_Result.ok || !_Voice_Result.transcription) {
+        return { abort: true, messages: _With_Current_Prompt(_Session, _Voice_Error_Message(_Voice_Result)) };
     }
-    return { ..._Event, type: 'text', text: _Transcript.trim(), rawText: _Transcript };
+    return {
+        ..._Event,
+        type: 'text',
+        text: _Voice_Result.transcription.trim(),
+        rawText: _Voice_Result.transcription,
+        inputSource: 'voice',
+        originalType: 'voice',
+    };
 }
 
 function _Finalize_Session(_Prev, _Result, _Message_Sid) {
@@ -712,6 +726,7 @@ function _Build_Claim_Hub_Prompt(_Claim, _Pending = []) {
         `Crop: ${_Crop_Done(_Claim) ? 'Complete' : 'Pending'}`,
         `Date/location: ${_Date_Location_Done(_Claim) ? 'Complete' : 'Pending'}`,
         _Identity_Status_Line(_Claim),
+        _Template_Status_Line(_Claim),
         `Photos: ${_Claim.approvedPhotoCount || 0}/${_Photo_Config.MIN_PHOTOS_REQUIRED}${_Pending.length ? ` | Missing fields: ${_Pending.length}` : ''}`,
         'Choose a section to continue.',
     ].join('\n');
@@ -725,6 +740,7 @@ function _Build_Claim_Hub_Prompt(_Claim, _Pending = []) {
             { id: 'claim_crop', title: 'Crop details', description: 'Crop, season, cause, area' },
             { id: 'claim_date_location', title: 'Date and location', description: 'Loss date and field location' },
             { id: 'claim_documents', title: 'Documents', description: 'Upload ID and supporting documents' },
+            { id: 'claim_template', title: 'Insurer form', description: _Get_Template(_Claim.selectedTemplateId || _Claim.company)?.name || 'Choose SBI or ICICI' },
             { id: 'claim_missing', title: 'Missing details', description: _Pending.length ? `${_Pending.length} pending` : 'No pending fields' },
             { id: 'claim_photos', title: 'Photos', description: `${_Claim.approvedPhotoCount || 0} approved` },
             { id: 'claim_review', title: 'Review and submit', description: 'Final review and submission' },
@@ -738,6 +754,20 @@ function _Build_Doc_Prompt(_Claim) {
     return {
         type: 'text',
         body: `Send any supporting document images or files now.\n\nUploaded so far: ${_Claim.documentCount || 0}\n${_Identity_Document_Status(_Claim)}\n\nType done when you are finished.`,
+    };
+}
+
+function _Build_Template_Select_Prompt() {
+    return {
+        type: 'list',
+        body: 'Which insurer form should I prepare for this claim?',
+        buttonText: 'Choose form',
+        sectionTitle: 'Insurer forms',
+        items: _Template_Schema._Template_Choices().map((_Choice) => ({
+            id: _Choice.id,
+            title: _Choice.title,
+            description: _Choice.description,
+        })),
     };
 }
 
@@ -822,6 +852,15 @@ function _Identity_Upload_Result_Message(_Identity_Record_Value) {
     return 'I could not verify the farmer name from this document.';
 }
 
+function _Template_Status_Line(_Claim) {
+    const _Template = _Get_Template(_Claim?.selectedTemplateId || _Claim?.company);
+    if (!_Template) return 'Insurer form: Not selected';
+    const _Pending = Array.isArray(_Claim?.formSchema)
+        ? _Claim.formSchema.filter((_Field) => _Field.status === 'pending').length
+        : 0;
+    return `Insurer form: ${_Template.name}${_Pending ? ` | Pending template fields: ${_Pending}` : ' | Ready'}`;
+}
+
 function _Document_Field_Summary(_Fields = []) {
     if (!Array.isArray(_Fields) || !_Fields.length) return '';
     return [
@@ -855,6 +894,7 @@ function _Build_Review_Prompt(_Claim, _Pending = []) {
             `Loss date: ${_Claim.lossDate || 'Not provided'}`,
             `Documents: ${_Claim.documentCount || 0}`,
             _Identity_Status_Line(_Claim),
+            _Template_Status_Line(_Claim),
             `Approved photos: ${_Claim.approvedPhotoCount || 0}`,
             `Pending fields: ${_Pending.length}`,
             '',
@@ -1008,7 +1048,11 @@ _State_Handlers = {
             return { state: _States.LANGUAGE_SELECT, prompt: _Prompt, messages: [_Prompt], pushHistory: false };
         }
 
-        const _Selected = _Parse_Language(event.text);
+        let _Selected = _Parse_Language(event.text);
+        if (!_Selected && _Is_Voice_Event(event)) {
+            const _Voice_Selected = await _Resolve_Voice_Static_Result(_States.LANGUAGE_SELECT, event.text, session.language);
+            _Selected = _Voice_Selected?.result || null;
+        }
         if (!_Selected) {
             return { state: _States.LANGUAGE_SELECT, messages: _With_Current_Prompt(session, 'Please choose one of the listed languages.') };
         }
@@ -1047,7 +1091,7 @@ _State_Handlers = {
             return { state: _States.MAIN_MENU, prompt: _Prompt, messages: [_Prompt], pushHistory: false };
         }
 
-        const _Action = await _Resolve_Main_Menu(event.text, session.language, session.context.helperMode);
+        const _Action = await _Resolve_Main_Menu(event.text, session.language, session.context.helperMode, event, session);
         if (!_Action) {
             return { state: _States.MAIN_MENU, messages: _With_Current_Prompt(session, 'Please choose one of the menu options.') };
         }
@@ -1117,7 +1161,7 @@ _State_Handlers = {
             return { state: _States.CLAIM_HUB, context: { activeClaimId: _Claim.claimId, currentFieldKey: null }, prompt: _Prompt, messages: [_Prompt] };
         }
 
-        const _Action = await _Resolve_Claim_Hub(event.text, session.language);
+        const _Action = await _Resolve_Claim_Hub(event.text, session.language, event, session);
         if (!_Action) return { state: _States.CLAIM_HUB, messages: _With_Current_Prompt(session, 'Choose one of the sections from the claim hub.') };
         if (_Action === 'farmer') return _Enter_State(session, _States.CLAIM_FARMER_DETAILS, { currentFieldKey: null });
         if (_Action === 'crop') return _Enter_State(session, _States.CLAIM_CROP_DETAILS, { currentFieldKey: null });
@@ -1128,6 +1172,7 @@ _State_Handlers = {
             }
             return _Enter_State(session, _States.CLAIM_DOCUMENTS);
         }
+        if (_Action === 'template') return _Enter_State(session, _States.CLAIM_TEMPLATE_SELECT);
         if (_Action === 'missing') {
             if (!_Pending.length) return { state: _States.CLAIM_HUB, messages: _With_Current_Prompt(session, 'There are no pending extracted fields right now.') };
             return _Enter_State(session, _States.CLAIM_MISSING_FIELDS, { currentFieldKey: null });
@@ -1160,6 +1205,46 @@ _State_Handlers = {
         return { state: _States.CLAIM_HUB, messages: _With_Current_Prompt(session, 'Choose one of the sections from the claim hub.') };
     },
 
+    [_States.CLAIM_TEMPLATE_SELECT]: async ({ session, event }) => {
+        const _Claim = await _Active_Claim(session);
+        if (!_Claim) return _Enter_State(_Clear_Claim_Session(session), _States.MAIN_MENU);
+
+        if (event.type === 'init' || !event.text) {
+            const _Prompt = _Build_Template_Select_Prompt();
+            return { state: _States.CLAIM_TEMPLATE_SELECT, prompt: _Prompt, messages: [_Prompt] };
+        }
+
+        let _Template_Id = _Template_Schema._Parse_Template_Choice(event.text);
+        if (!_Template_Id && _Is_Voice_Event(event)) {
+            const _Voice_Template = await _Resolve_Voice_Static_Result(_States.CLAIM_TEMPLATE_SELECT, event.text, session.language);
+            _Template_Id = _Voice_Template?.result || null;
+        }
+        if (!_Template_Id) {
+            return { state: _States.CLAIM_TEMPLATE_SELECT, messages: _With_Current_Prompt(session, 'Choose SBI or ICICI Lombard from the list.') };
+        }
+
+        const _Prepared = await _Prepare_Template_Schema(_Claim.claimId, session.context.userId, _Template_Id);
+        if (!_Prepared.template) {
+            return { state: _States.CLAIM_TEMPLATE_SELECT, messages: _With_Current_Prompt(session, 'That insurer form could not be prepared right now.') };
+        }
+
+        if (_Prepared.pendingCount > 0) {
+            return _Enter_State(session, _States.CLAIM_MISSING_FIELDS, { currentFieldKey: null }, {
+                extraMessages: [{
+                    type: 'text',
+                    body: `${_Prepared.template.name} selected. I already prefilled ${_Prepared.prefilledCount} field(s) and still need ${_Prepared.pendingCount} more.`,
+                }],
+            });
+        }
+
+        return _Enter_State(session, _States.CLAIM_HUB, {}, {
+            extraMessages: [{
+                type: 'text',
+                body: `${_Prepared.template.name} selected. I already have enough information to generate the insurer form when you submit the claim.`,
+            }],
+        });
+    },
+
     [_States.CLAIM_FARMER_DETAILS]: async (_Args) => _Section_Handler(_Args, _States.CLAIM_FARMER_DETAILS),
     [_States.CLAIM_CROP_DETAILS]: async (_Args) => _Section_Handler(_Args, _States.CLAIM_CROP_DETAILS),
     [_States.CLAIM_DATE_LOCATION]: async (_Args) => _Section_Handler(_Args, _States.CLAIM_DATE_LOCATION),
@@ -1174,7 +1259,11 @@ _State_Handlers = {
         }
 
         if (event.type === 'text') {
-            const _Value = _Norm(event.text);
+            let _Value = _Norm(event.text);
+            if (_Is_Voice_Event(event) && _Value !== 'done' && _Value !== 'skip') {
+                const _Voice_Action = await _Resolve_Voice_Static_Result(_States.CLAIM_DOCUMENTS, event.text, session.language);
+                _Value = _Voice_Action?.result || _Value;
+            }
             if (_Value === 'done' || _Value === 'skip') {
                 if (!_Identity_Is_Verified(_Claim)) {
                     return { state: _States.CLAIM_DOCUMENTS, messages: _With_Current_Prompt(session, _Identity_Document_Request(_Claim)) };
@@ -1215,7 +1304,11 @@ _State_Handlers = {
             await _Invoke_Auto_Fill(_Claim.claimId, session.context.userId);
         }
 
-        const _Updated = await _DB._Get_Claim_By_Id(_Claim.claimId);
+        let _Updated = await _DB._Get_Claim_By_Id(_Claim.claimId);
+        if (_Updated?.selectedTemplateId || _Updated?.company) {
+            await _Prepare_Template_Schema(_Claim.claimId, session.context.userId, _Updated.selectedTemplateId || _Updated.company);
+            _Updated = await _DB._Get_Claim_By_Id(_Claim.claimId);
+        }
         const _Prompt = _Build_Doc_Prompt(_Updated);
         return {
             state: _States.CLAIM_DOCUMENTS,
@@ -1236,8 +1329,12 @@ _State_Handlers = {
     },
 
     [_States.CLAIM_MISSING_FIELDS]: async ({ session, event }) => {
-        const _Claim = await _Active_Claim(session);
+        let _Claim = await _Active_Claim(session);
         if (!_Claim) return _Enter_State(_Clear_Claim_Session(session), _States.MAIN_MENU);
+        if ((_Claim.selectedTemplateId || _Claim.company) && !Array.isArray(_Claim.formSchema)) {
+            await _Prepare_Template_Schema(_Claim.claimId, session.context.userId, _Claim.selectedTemplateId || _Claim.company);
+            _Claim = await _DB._Get_Claim_By_Id(_Claim.claimId);
+        }
 
         const _Pending = await _Pending_Fields(_Claim);
         if (!_Pending.length) return _Enter_State(session, _States.CLAIM_HUB, {}, { extraMessages: [{ type: 'text', body: 'There are no pending extracted fields anymore.' }] });
@@ -1263,11 +1360,14 @@ _State_Handlers = {
             return _State_Handlers[_States.CLAIM_MISSING_FIELDS]({ session: { ...session, context: { ...session.context, currentFieldKey: null } }, event: { type: 'init', text: '' } });
         }
 
-        const _Parsed = await _Parse_Schema_Field(_Field, event.text, session.language);
+        const _Parsed = await _Parse_Schema_Field(_Field, event, session.language);
         if (!_Parsed.ok) return { state: _States.CLAIM_MISSING_FIELDS, messages: _With_Current_Prompt(session, _Parsed.reason) };
         await _DB._Update_Field_Status(_Claim.claimId, session.context.userId, _Field.field_name, 'completed', _Parsed.value, 'user');
         const _Claim_Update = _Schema_Claim_Update(_Field.field_name, _Parsed.value);
         if (Object.keys(_Claim_Update).length) await _DB._Update_Claim(_Claim.claimId, session.context.userId, _Claim_Update);
+        if (_Claim.selectedTemplateId || _Claim.company || _Claim_Update.selectedTemplateId) {
+            await _Prepare_Template_Schema(_Claim.claimId, session.context.userId, _Claim.selectedTemplateId || _Claim.company || _Claim_Update.selectedTemplateId);
+        }
         return _State_Handlers[_States.CLAIM_MISSING_FIELDS]({ session: { ...session, context: { ...session.context, currentFieldKey: null } }, event: { type: 'init', text: '' } });
     },
 
@@ -1281,7 +1381,12 @@ _State_Handlers = {
         }
 
         if (event.type === 'text') {
-            if (_Norm(event.text) === 'done') {
+            let _Value = _Norm(event.text);
+            if (_Is_Voice_Event(event) && _Value !== 'done') {
+                const _Voice_Action = await _Resolve_Voice_Static_Result(_States.CLAIM_PHOTOS, event.text, session.language);
+                _Value = _Voice_Action?.result || _Value;
+            }
+            if (_Value === 'done') {
                 if (Number(_Claim.approvedPhotoCount || 0) >= _Photo_Config.MIN_PHOTOS_REQUIRED) {
                     return _Enter_State(session, _States.CLAIM_HUB, {}, { extraMessages: [{ type: 'text', body: 'Photo section completed.' }] });
                 }
@@ -1342,8 +1447,12 @@ _State_Handlers = {
     },
 
     [_States.CLAIM_REVIEW]: async ({ session, event }) => {
-        const _Claim = await _Active_Claim(session);
+        let _Claim = await _Active_Claim(session);
         if (!_Claim) return _Enter_State(_Clear_Claim_Session(session), _States.MAIN_MENU);
+        if (_Claim.selectedTemplateId || _Claim.company) {
+            await _Prepare_Template_Schema(_Claim.claimId, session.context.userId, _Claim.selectedTemplateId || _Claim.company);
+            _Claim = await _DB._Get_Claim_By_Id(_Claim.claimId);
+        }
         const _Pending = await _Pending_Fields(_Claim);
         const _Check = _Can_Review(_Claim, _Pending);
         if (!_Check.ok) {
@@ -1358,7 +1467,11 @@ _State_Handlers = {
             return { state: _States.CLAIM_REVIEW, prompt: _Prompt, messages: [_Prompt] };
         }
 
-        const _Value = _Norm(event.text);
+        let _Value = _Norm(event.text);
+        if (_Is_Voice_Event(event)) {
+            const _Voice_Action = await _Resolve_Voice_Static_Result(_States.CLAIM_REVIEW, event.text, session.language);
+            _Value = _Voice_Action?.result || _Value;
+        }
         if (_Value === 'review_submit' || _Value === 'submit' || _Value === '1') {
             await _DB._Update_Claim_Status(_Claim.claimId, session.context.userId, _Claim_Status.SUBMITTED, {
                 draftState: null,
@@ -1372,7 +1485,7 @@ _State_Handlers = {
                 language: session.language,
             });
             return _Enter_State(_Clear_Claim_Session(session), _States.MAIN_MENU, {}, {
-                extraMessages: [{ type: 'text', body: `Claim ${_Claim.claimId} has been submitted. I am generating your claim document pack and will send it here when it is ready.` }],
+                extraMessages: [{ type: 'text', body: `Claim ${_Claim.claimId} has been submitted. I am generating your claim document pack${_Get_Template(_Claim.selectedTemplateId || _Claim.company) ? ' and the filled insurer form' : ''} and will send it here when it is ready.` }],
                 resetHistory: true,
                 pushHistory: false,
             });
@@ -1400,7 +1513,14 @@ _State_Handlers = {
             const _Prompt = _Build_Status_List_Prompt(_Claims);
             return { state: _States.STATUS_LIST, prompt: _Prompt, messages: [_Prompt] };
         }
-        const _Selected = _Pick_Claim(event.text, _Claims, 'claim_');
+        let _Selected = _Pick_Claim(event.text, _Claims, 'claim_');
+        if (!_Selected && _Is_Voice_Event(event)) {
+            const _Voice_Selected = await _Resolve_Voice_List_Result(_States.STATUS_LIST, event.text, session.language, _Claims, {
+                itemResult: 'status_claim',
+                itemDescription: (_Claim, _Index) => `open claim ${_Index + 1}: ${_Claim.claimId} with status ${_Claim.status || _Claim_Status.DRAFT}`,
+            });
+            _Selected = _Voice_Selected?.item || null;
+        }
         if (!_Selected) return { state: _States.STATUS_LIST, messages: _With_Current_Prompt(session, 'Choose a claim from the list to view its details.') };
         return _Enter_State(session, _States.STATUS_DETAIL, { selectedStatusClaimId: _Selected.claimId });
     },
@@ -1412,7 +1532,11 @@ _State_Handlers = {
             const _Prompt = _Build_Status_Detail_Prompt(_Claim);
             return { state: _States.STATUS_DETAIL, prompt: _Prompt, messages: [_Prompt] };
         }
-        const _Value = _Norm(event.text);
+        let _Value = _Norm(event.text);
+        if (_Is_Voice_Event(event)) {
+            const _Voice_Action = await _Resolve_Voice_Static_Result(_States.STATUS_DETAIL, event.text, session.language);
+            _Value = _Voice_Action?.result || _Value;
+        }
         if (_Value === 'status_back' || _Value === 'back' || _Value === '1') return _Enter_State(session, _States.STATUS_LIST);
         if (_Value === 'status_menu' || _Value === 'menu' || _Value === '2') return _Enter_State(_Clear_Claim_Session(session), _States.MAIN_MENU, {}, { resetHistory: true, pushHistory: false });
         if (_Value === 'status_appeal' || _Value === 'appeal') {
@@ -1436,8 +1560,22 @@ _State_Handlers = {
             _Prompt.items = _Prompt.items.map((_Item) => _Item.id.startsWith('claim_') ? { ..._Item, id: _Item.id.replace(/^claim_/, 'draft_') } : _Item);
             return { state: _States.DRAFT_RESUME_LIST, prompt: _Prompt, messages: [_Prompt] };
         }
-        if (_Norm(event.text) === 'draft_new_claim') return _Create_Claim(session);
-        const _Selected = _Pick_Claim(event.text, _Drafts, 'draft_');
+        let _Value = _Norm(event.text);
+        if (_Value === 'draft_new_claim') return _Create_Claim(session);
+        let _Selected = _Pick_Claim(event.text, _Drafts, 'draft_');
+        if (!_Selected && _Is_Voice_Event(event)) {
+            const _Voice_Selected = await _Resolve_Voice_List_Result(_States.DRAFT_RESUME_LIST, event.text, session.language, _Drafts, {
+                itemResult: 'resume_draft',
+                itemDescription: (_Claim, _Index) => `resume draft ${_Index + 1}: ${_Claim.claimId} status ${_Claim.status || _Claim_Status.DRAFT}`,
+                staticResults: session.context.allowNewDraft ? [{
+                    key: 'START_NEW_CLAIM',
+                    result: 'start_new_claim',
+                    description: 'create a fresh claim draft instead',
+                }] : [],
+            });
+            if (_Voice_Selected?.result === 'start_new_claim') return _Create_Claim(session);
+            _Selected = _Voice_Selected?.item || null;
+        }
         if (!_Selected) return { state: _States.DRAFT_RESUME_LIST, messages: _With_Current_Prompt(session, 'Choose a draft from the list to resume it.') };
         return _Resume_Draft(session, _Selected);
     },
@@ -1449,7 +1587,14 @@ _State_Handlers = {
             const _Prompt = _Build_Status_List_Prompt(_Drafts, true);
             return { state: _States.DRAFT_DELETE_LIST, prompt: _Prompt, messages: [_Prompt] };
         }
-        const _Selected = _Pick_Claim(event.text, _Drafts, 'draft_');
+        let _Selected = _Pick_Claim(event.text, _Drafts, 'draft_');
+        if (!_Selected && _Is_Voice_Event(event)) {
+            const _Voice_Selected = await _Resolve_Voice_List_Result(_States.DRAFT_DELETE_LIST, event.text, session.language, _Drafts, {
+                itemResult: 'delete_draft',
+                itemDescription: (_Claim, _Index) => `delete draft ${_Index + 1}: ${_Claim.claimId} status ${_Claim.status || _Claim_Status.DRAFT}`,
+            });
+            _Selected = _Voice_Selected?.item || null;
+        }
         if (!_Selected) return { state: _States.DRAFT_DELETE_LIST, messages: _With_Current_Prompt(session, 'Choose the draft you want to delete.') };
         await _DB._Delete_Claim(_Selected.claimId, _Selected.userId);
         return _Enter_State(session, _States.MAIN_MENU, {}, {
@@ -1465,7 +1610,11 @@ _State_Handlers = {
             const _Prompt = _Build_Discard_Prompt();
             return { state: _States.DISCARD_CLAIM_CONFIRM, prompt: _Prompt, messages: [_Prompt] };
         }
-        const _Value = _Norm(event.text);
+        let _Value = _Norm(event.text);
+        if (_Is_Voice_Event(event)) {
+            const _Voice_Action = await _Resolve_Voice_Static_Result(_States.DISCARD_CLAIM_CONFIRM, event.text, session.language);
+            _Value = _Voice_Action?.result || _Value;
+        }
         if (_Value === 'discard_yes' || _Value === 'delete' || _Value === '1') {
             await _DB._Delete_Claim(_Claim.claimId, session.context.userId);
             return _Enter_State(_Clear_Claim_Session(session), _States.MAIN_MENU, {}, {
@@ -1474,7 +1623,7 @@ _State_Handlers = {
                 pushHistory: false,
             });
         }
-        if (_Value === 'discard_no' || _Value === 'cancel' || _Value === '2') {
+        if (_Value === 'discard_no' || _Value === 'keep' || _Value === 'cancel' || _Value === '2') {
             return _Enter_State(session, _States.CLAIM_HUB, {}, { extraMessages: [{ type: 'text', body: 'The draft claim was kept.' }] });
         }
         return { state: _States.DISCARD_CLAIM_CONFIRM, messages: _With_Current_Prompt(session, 'Choose Delete draft or Keep claim.') };
@@ -1576,7 +1725,11 @@ _State_Handlers = {
             const _Prompt = _Build_Operator_Prompt();
             return { state: _States.OPERATOR_HANDOFF, prompt: _Prompt, messages: [_Prompt], pushHistory: false };
         }
-        const _Value = _Norm(event.text);
+        let _Value = _Norm(event.text);
+        if (_Is_Voice_Event(event)) {
+            const _Voice_Action = await _Resolve_Voice_Static_Result(_States.OPERATOR_HANDOFF, event.text, session.language);
+            _Value = _Voice_Action?.result || _Value;
+        }
         if (_Value === 'support_menu' || _Value === 'menu') return _Enter_State(_Clear_Claim_Session(session), _States.MAIN_MENU, {}, { resetHistory: true, pushHistory: false });
         if (_Value === 'support_back' || _Value === 'back') {
             const _Return = session.context.operatorReturn;
@@ -1610,9 +1763,13 @@ _State_Handlers = {
             const _Prompt = _Build_Appeal_Prompt(_Claim);
             return { state: _States.APPEAL_START, prompt: _Prompt, messages: [_Prompt] };
         }
-        const _Value = _Norm(event.text);
+        let _Value = _Norm(event.text);
+        if (_Is_Voice_Event(event)) {
+            const _Voice_Action = await _Resolve_Voice_Static_Result(_States.APPEAL_START, event.text, session.language);
+            _Value = _Voice_Action?.result || _Value;
+        }
         if (_Value === 'appeal_cancel' || _Value === 'cancel' || _Value === '2') return _Enter_State(session, _States.STATUS_DETAIL, {}, { extraMessages: [{ type: 'text', body: 'Appeal creation cancelled.' }] });
-        if (_Value === 'appeal_confirm' || _Value === 'create appeal' || _Value === '1') {
+        if (_Value === 'appeal_confirm' || _Value === 'create' || _Value === 'create appeal' || _Value === '1') {
             const _Appeal = await _Invoke_Appeal_Generator(_Claim.claimId, { ..._Claim, userId: session.context.userId });
             await _DB._Update_Claim_Status(_Claim.claimId, session.context.userId, _Claim_Status.APPEAL_FILED, { appealSubmittedAt: new Date().toISOString() }).catch(() => null);
             return _Enter_State(session, _States.STATUS_DETAIL, {}, {
@@ -1703,6 +1860,9 @@ async function _Section_Handler({ session, event }, _State) {
     const _Parsed = await _Parse_Section_Field(_Field, event, session.language, _Claim);
     if (!_Parsed.ok) return { state: _State, messages: _With_Current_Prompt(session, _Parsed.reason) };
     await _Update_Section_Value(_Claim, session.context.userId, _Field.key, _Parsed.value);
+    if (_Claim.selectedTemplateId || _Claim.company) {
+        await _Prepare_Template_Schema(_Claim.claimId, session.context.userId, _Claim.selectedTemplateId || _Claim.company);
+    }
     if (_State === _States.CLAIM_DATE_LOCATION && _Field.key === 'exact_location') {
         return _Enter_State(
             { ...session, context: { ...session.context, currentFieldKey: null } },
@@ -1738,6 +1898,32 @@ async function _Pending_Fields(_Claim) {
         return _DB._Get_Pending_Fields(_Claim.claimId);
     }
     return _Pending;
+}
+
+async function _Prepare_Template_Schema(_Claim_Id, _User_Id, _Template_Id) {
+    const _Claim = await _DB._Get_Claim_By_Id(_Claim_Id);
+    const _Template = _Get_Template(_Template_Id);
+    if (!_Claim || !_Template) return { template: null, schema: [], pendingCount: 0, prefilledCount: 0 };
+
+    const _Schema = _Template_Schema._Build_Template_Schema(_Template.id, {
+        ..._Claim,
+        selectedTemplateId: _Template.id,
+        company: _Template.id,
+    });
+
+    await _DB._Update_Claim(_Claim_Id, _User_Id, {
+        selectedTemplateId: _Template.id,
+        company: _Template.id,
+        templateBuildStatus: _Schema.some((_Field) => _Field.status === 'pending') ? 'needs_input' : 'ready',
+    });
+    await _DB._Update_Form_Schema(_Claim_Id, _User_Id, _Schema);
+
+    return {
+        template: _Template,
+        schema: _Schema,
+        pendingCount: _Schema.filter((_Field) => _Field.status === 'pending').length,
+        prefilledCount: _Schema.filter((_Field) => _Field.status !== 'pending').length,
+    };
 }
 
 function _Can_Review(_Claim, _Pending) {
@@ -1820,6 +2006,39 @@ function _Schema_Claim_Update(_Field, _Value) {
         case 'cause': return { cause: _Value };
         case 'area_hectares': return { areaHectares: _Value };
         case 'loss_date': return { lossDate: _Value };
+        case 'mobile_number':
+        case 'phone_number': return { phoneNumber: _Value };
+        case 'mailing_address': return { address: _Value };
+        case 'mailing_village': return { village: _Value };
+        case 'mailing_district': return { district: _Value };
+        case 'mailing_state': return { state: _Value };
+        case 'mailing_tehsil': return { tehsil: _Value };
+        case 'mailing_pin_code': return { pinCode: _Value };
+        case 'land_address': return { landAddress: _Value };
+        case 'land_village': return { landVillage: _Value };
+        case 'land_district': return { landDistrict: _Value };
+        case 'land_state': return { landState: _Value };
+        case 'land_tehsil': return { landTehsil: _Value };
+        case 'land_pin_code': return { landPinCode: _Value };
+        case 'gender': return { gender: _Value };
+        case 'social_category': return { socialCategory: _Value };
+        case 'account_type': return { accountType: _Value };
+        case 'has_crop_loan_or_kcc': return { hasCropLoanOrKcc: _Value };
+        case 'crop_season_year': return { cropSeasonYear: _Value };
+        case 'sowing_date': return { sowingDate: _Value };
+        case 'crop_stage': return { cropStage: _Value };
+        case 'proposed_harvest_date': return { proposedHarvestDate: _Value };
+        case 'harvesting_date': return { harvestingDate: _Value };
+        case 'total_land_hectare': return { totalLandHectares: _Value };
+        case 'total_land_insured_hectare': return { totalLandInsuredHectares: _Value };
+        case 'loanee_status': return { loaneeStatus: _Value };
+        case 'survey_or_khasara_or_udyan_no': return { surveyOrKhasaraOrUdyanNo: _Value };
+        case 'notified_area_name': return { notifiedAreaName: _Value };
+        case 'sum_insured_rupees': return { sumInsuredRupees: _Value };
+        case 'premium_paid_rupees': return { premiumPaidRupees: _Value };
+        case 'premium_deduction_or_cover_note_date': return { premiumDeductionOrCoverNoteDate: _Value };
+        case 'pep_declaration': return { pepDeclaration: _Value };
+        case 'place': return { formPlace: _Value };
         default: return {};
     }
 }
@@ -1857,11 +2076,117 @@ async function _Update_Section_Value(_Claim, _User_Id, _Key, _Value) {
     if (Object.keys(_Updates).length) await _DB._Update_Claim(_Claim.claimId, _User_Id, _Updates);
 }
 
+function _Is_Voice_Event(_Event) {
+    return _Event?.inputSource === 'voice' || _Event?.originalType === 'voice';
+}
+
+function _Voice_State_Config(_State) {
+    return _Voice_Intent_Schema?.states?.[_Normalize_State(_State)] || null;
+}
+
+function _Voice_Field_Config(_Field_Key) {
+    return _Voice_Intent_Schema?.fieldChoices?.[_Field_Key] || null;
+}
+
+function _Voice_Accept_Confidence(_Config, _Fallback = 0.8) {
+    const _Value = Number(_Config?.acceptConfidence);
+    return Number.isFinite(_Value) ? Math.max(0, Math.min(1, _Value)) : _Fallback;
+}
+
+function _Voice_Context_From_Prompt(_Prompt) {
+    if (!_Prompt) return '';
+    if (typeof _Prompt === 'string') return _Prompt;
+    const _Parts = [];
+    if (_Prompt.body) _Parts.push(String(_Prompt.body));
+    if (Array.isArray(_Prompt.buttons) && _Prompt.buttons.length) {
+        _Parts.push(`Buttons: ${_Prompt.buttons.map((_Button) => _Button.title).join(', ')}`);
+    }
+    if (Array.isArray(_Prompt.items) && _Prompt.items.length) {
+        _Parts.push(`List items: ${_Prompt.items.map((_Item, _Index) => `${_Index + 1}. ${_Item.title}${_Item.description ? ` (${_Item.description})` : ''}`).join('; ')}`);
+    }
+    return _Parts.join('\n').trim();
+}
+
+async function _Resolve_Voice_Static_Result(_State, _Text, _Language, _Entries_Override = null, _Extra_Context = '') {
+    const _State_Config = _Voice_State_Config(_State);
+    if (!_State_Config?.enabled) return null;
+
+    const _Entries = Array.isArray(_Entries_Override) && _Entries_Override.length
+        ? _Entries_Override
+        : [...(_State_Config.actions || []), ...(_State_Config.staticActions || [])];
+
+    if (!_Entries.length) return null;
+
+    try {
+        const _Ai = await _Bedrock._Interpret_Message(
+            _Normalize_State(_State),
+            _Text,
+            _Entries.map((_Entry) => ({
+                key: String(_Entry.key || '').toUpperCase(),
+                description: _Entry.description || _Entry.label || _Entry.result || _Entry.key,
+            })),
+            _Language,
+            _Extra_Context,
+        );
+
+        if (!_Ai?.action || _Ai.action === 'UNKNOWN') return null;
+        if (_Ai.confidence < _Voice_Accept_Confidence(_State_Config)) return null;
+
+        const _Matched = _Entries.find((_Entry) => String(_Entry.key || '').toUpperCase() === _Ai.action);
+        return _Matched ? { ..._Matched, confidence: _Ai.confidence, data: _Ai.data || null } : null;
+    } catch (_Error) {
+        console.error('Voice static resolver failed:', _State, _Error.message);
+        return null;
+    }
+}
+
+async function _Resolve_Voice_List_Result(_State, _Text, _Language, _Items, _Options = {}) {
+    const _State_Config = _Voice_State_Config(_State);
+    if (!_State_Config?.enabled || !Array.isArray(_Items) || !_Items.length) return null;
+
+    const _Dynamic_Entries = _Items.map((_Item, _Index) => ({
+        key: `ITEM_${_Index + 1}`,
+        result: _Options.itemResult || 'select_item',
+        description: _Options.itemDescription
+            ? _Options.itemDescription(_Item, _Index)
+            : `choose item ${_Index + 1}: ${_Item.claimId || _Item.id || _Item.title || `item ${_Index + 1}`}`,
+        item: _Item,
+        index: _Index,
+    }));
+
+    const _Static_Entries = Array.isArray(_Options.staticResults) && _Options.staticResults.length
+        ? _Options.staticResults
+        : (_State_Config.staticActions || []);
+
+    const _Resolved = await _Resolve_Voice_Static_Result(
+        _State,
+        _Text,
+        _Language,
+        [..._Dynamic_Entries, ..._Static_Entries],
+        _Options.extraContext || '',
+    );
+
+    if (!_Resolved) return null;
+    if (_Resolved.item) {
+        return {
+            result: _Resolved.result || _Options.itemResult || 'select_item',
+            item: _Resolved.item,
+            index: _Resolved.index,
+            confidence: _Resolved.confidence,
+        };
+    }
+    return {
+        result: _Resolved.result || null,
+        item: null,
+        confidence: _Resolved.confidence,
+    };
+}
+
 async function _Parse_Section_Field(_Field, _Event, _Language) {
-    if (_Field.key === 'crop_type') return _Choice(_Event.text, _CROP_OPTIONS, _Language, 'crop choice');
-    if (_Field.key === 'season') return _Choice(_Event.text, _SEASON_OPTIONS, _Language, 'season choice');
-    if (_Field.key === 'cause') return _Choice(_Event.text, _CAUSE_OPTIONS, _Language, 'cause choice');
-    if (_Field.key === 'policy_type') return _Choice(_Event.text, _POLICY_OPTIONS, _Language, 'policy choice');
+    if (_Field.key === 'crop_type') return _Choice(_Event.text, _CROP_OPTIONS, _Language, _Event.inputSource, 'crop_type');
+    if (_Field.key === 'season') return _Choice(_Event.text, _SEASON_OPTIONS, _Language, _Event.inputSource, 'season');
+    if (_Field.key === 'cause') return _Choice(_Event.text, _CAUSE_OPTIONS, _Language, _Event.inputSource, 'cause');
+    if (_Field.key === 'policy_type') return _Choice(_Event.text, _POLICY_OPTIONS, _Language, _Event.inputSource, 'policy_type');
     if (_Field.key === 'area_hectares') {
         const _Value = _Number(_Event.text);
         if (!_Value || _Value <= 0) return { ok: false, reason: 'Please enter a valid affected area.' };
@@ -1902,8 +2227,8 @@ async function _Parse_Section_Field(_Field, _Event, _Language) {
     return { ok: true, value: _Text };
 }
 
-async function _Parse_Schema_Field(_Field, _Text, _Language) {
-    const _Value = String(_Text || '').trim();
+async function _Parse_Schema_Field(_Field, _Event, _Language) {
+    const _Value = String(_Event?.text || '').trim();
     if (_Field.field_type === 'date') {
         const _Parsed = await _Date(_Value);
         return _Parsed ? { ok: true, value: _Parsed } : { ok: false, reason: 'Please reply with a valid date.' };
@@ -1919,28 +2244,36 @@ async function _Parse_Schema_Field(_Field, _Text, _Language) {
             label: _Humanize(_Option),
             aliases: [String(_Index + 1), _Option],
         }));
-        return _Choice(_Value, _Options, _Language, 'schema choice');
+        return _Choice(_Value, _Options, _Language, _Event?.inputSource, 'schema_choice');
     }
     if (_Field.field_name === 'phone_number') {
         const _Phone_Value = _Phone(_Value);
         return _Phone_Value ? { ok: true, value: _Phone_Value } : { ok: false, reason: 'Please enter a valid phone number.' };
     }
+    if (_Field.field_name === 'mobile_number') {
+        const _Phone_Value = _Phone(_Value);
+        return _Phone_Value ? { ok: true, value: _Phone_Value } : { ok: false, reason: 'Please enter a valid mobile number.' };
+    }
     if (_Field.field_name === 'aadhaar_number') {
         const _Digits = _Value.replace(/[^\d]/g, '');
         return _Digits.length === 12 ? { ok: true, value: _Digits } : { ok: false, reason: 'Aadhaar number must contain 12 digits.' };
     }
-    if (_Field.field_name === 'bank_ifsc') {
+    if (_Field.field_name === 'bank_ifsc' || _Field.field_name === 'ifsc_code') {
         return /^[A-Za-z]{4}[A-Za-z0-9]{7}$/.test(_Value) ? { ok: true, value: _Value.toUpperCase() } : { ok: false, reason: 'Please enter a valid IFSC code.' };
     }
     if (_Field.field_name === 'bank_account_number') {
         const _Digits = _Value.replace(/[^\d]/g, '');
         return _Digits.length >= 6 ? { ok: true, value: _Digits } : { ok: false, reason: 'Please enter a valid bank account number.' };
     }
+    if (['mailing_pin_code', 'land_pin_code'].includes(_Field.field_name)) {
+        const _Digits = _Value.replace(/[^\d]/g, '');
+        return _Digits.length === 6 ? { ok: true, value: _Digits } : { ok: false, reason: 'Pin code must contain 6 digits.' };
+    }
     if (_Value.length < 2) return { ok: false, reason: 'Please enter a valid value.' };
     return { ok: true, value: _Value };
 }
 
-async function _Choice(_Text, _Options, _Language, _State_Name) {
+async function _Choice(_Text, _Options, _Language, _Input_Source, _Choice_Key) {
     const _Value = _Norm(_Text);
     const _Direct = _Options.find((_Option) =>
         _Norm(_Option.key) === _Value
@@ -1948,15 +2281,30 @@ async function _Choice(_Text, _Options, _Language, _State_Name) {
         || (_Option.aliases || []).some((_Alias) => _Norm(_Alias) === _Value)
     );
     if (_Direct) return { ok: true, value: _Direct.value };
+
+    if (_Input_Source !== 'voice') return { ok: false, reason: 'Please choose one of the listed options.' };
+
+    const _Choice_Config = _Voice_Field_Config(_Choice_Key);
+    if (!_Choice_Config?.enabled) return { ok: false, reason: 'Please choose one of the listed options.' };
+
     try {
-        const _Ai = await _Bedrock._Interpret_Message(_State_Name, _Text, _Options.map((_Option) => ({
-            key: _Option.key.toUpperCase(),
-            description: `choose ${_Option.label}`,
-        })), _Language);
+        const _Ai = await _Bedrock._Interpret_Message(
+            `VOICE_FIELD_${String(_Choice_Key || 'CHOICE').toUpperCase()}`,
+            _Text,
+            _Options.map((_Option) => ({
+                key: _Option.key.toUpperCase(),
+                description: `choose ${_Option.label}`,
+            })),
+            _Language,
+        );
+        if (!_Ai?.action || _Ai.action === 'UNKNOWN') return { ok: false, reason: 'Please choose one of the listed options.' };
+        if (_Ai.confidence < _Voice_Accept_Confidence(_Choice_Config, 0.75)) {
+            return { ok: false, reason: 'Please choose one of the listed options.' };
+        }
         const _Selected = _Options.find((_Option) => _Option.key.toUpperCase() === _Ai.action);
         if (_Selected) return { ok: true, value: _Selected.value };
     } catch (_Error) {
-        // ignore
+        console.error('Voice choice resolver failed:', _Choice_Key, _Error.message);
     }
     return { ok: false, reason: 'Please choose one of the listed options.' };
 }
@@ -1982,87 +2330,74 @@ function _Phone(_Text) {
     return null;
 }
 
-async function _Resolve_Main_Menu(_Text, _Language, _Helper_Mode) {
+async function _Resolve_Main_Menu(_Text, _Language, _Helper_Mode, _Event, _Session) {
     const _Value = _Norm(_Text);
-    const _Direct = {
-        '1': 'new_claim', menu_new_claim: 'new_claim',
-        '2': 'status', menu_status: 'status',
-        '3': 'resume', menu_resume: 'resume',
-        '4': 'delete_draft', menu_delete_draft: 'delete_draft',
-        '5': 'query', menu_query: 'query',
-        '6': 'premium', menu_premium: 'premium',
-        '7': _Helper_Mode ? 'exit_helper' : 'helper',
-        menu_helper: 'helper', menu_exit_helper: 'exit_helper',
-        '8': 'language', menu_language: 'language',
-    };
-    if (_Direct[_Value]) return _Direct[_Value];
-    try {
-        const _Ai = await _Bedrock._Interpret_Message('MAIN_MENU', _Text, [
-            { key: 'NEW_CLAIM', description: 'start a new claim' },
-            { key: 'STATUS', description: 'view claim status' },
-            { key: 'RESUME', description: 'resume a saved draft' },
-            { key: 'DELETE_DRAFT', description: 'delete one draft' },
-            { key: 'QUERY', description: 'ask an insurance question' },
-            { key: 'PREMIUM', description: 'calculate premium' },
-            { key: _Helper_Mode ? 'EXIT_HELPER' : 'HELPER', description: _Helper_Mode ? 'exit helper mode' : 'enter helper mode' },
-            { key: 'LANGUAGE', description: 'change language' },
-        ], _Language);
-        return {
-            NEW_CLAIM: 'new_claim',
-            STATUS: 'status',
-            RESUME: 'resume',
-            DELETE_DRAFT: 'delete_draft',
-            QUERY: 'query',
-            PREMIUM: 'premium',
-            HELPER: 'helper',
-            EXIT_HELPER: 'exit_helper',
-            LANGUAGE: 'language',
-        }[_Ai.action] || null;
-    } catch (_Error) {
-        return null;
-    }
+    const _Direct_Groups = [
+        { result: 'new_claim', aliases: ['1', 'menu_new_claim', 'new claim', 'start new claim', 'start claim', 'file claim', 'file a claim', 'create claim'] },
+        { result: 'status', aliases: ['2', 'menu_status', 'status', 'claim status', 'check status', 'check claim status'] },
+        { result: 'resume', aliases: ['3', 'menu_resume', 'resume', 'resume draft', 'continue draft', 'open draft'] },
+        { result: 'delete_draft', aliases: ['4', 'menu_delete_draft', 'delete draft', 'remove draft', 'delete my draft'] },
+        { result: 'query', aliases: ['5', 'menu_query', 'query', 'ask question', 'insurance question'] },
+        { result: 'premium', aliases: ['6', 'menu_premium', 'premium', 'calculate premium', 'premium calculator'] },
+        { result: _Helper_Mode ? 'exit_helper' : 'helper', aliases: ['7', _Helper_Mode ? 'menu_exit_helper' : 'menu_helper', _Helper_Mode ? 'exit helper mode' : 'helper mode', _Helper_Mode ? 'stop helper mode' : 'start helper mode'] },
+        { result: _Helper_Mode ? 'helper' : 'exit_helper', aliases: [_Helper_Mode ? 'menu_helper' : 'menu_exit_helper'] },
+        { result: 'language', aliases: ['8', 'menu_language', 'language', 'change language'] },
+    ];
+    const _Matched = _Direct_Groups.find((_Entry) => _Entry.aliases.some((_Alias) => _Norm(_Alias) === _Value));
+    if (_Matched) return _Matched.result;
+
+    if (!_Is_Voice_Event(_Event)) return null;
+
+    const _Resolved = await _Resolve_Voice_Static_Result(
+        _States.MAIN_MENU,
+        _Text,
+        _Language,
+        [
+            { key: 'NEW_CLAIM', result: 'new_claim', description: 'start a new crop insurance claim' },
+            { key: 'STATUS', result: 'status', description: 'view claim status' },
+            { key: 'RESUME', result: 'resume', description: 'resume a saved draft' },
+            { key: 'DELETE_DRAFT', result: 'delete_draft', description: 'delete one draft claim' },
+            { key: 'QUERY', result: 'query', description: 'ask a crop insurance question' },
+            { key: 'PREMIUM', result: 'premium', description: 'calculate premium' },
+            {
+                key: _Helper_Mode ? 'EXIT_HELPER' : 'HELPER',
+                result: _Helper_Mode ? 'exit_helper' : 'helper',
+                description: _Helper_Mode ? 'exit helper mode' : 'enter helper mode',
+            },
+            { key: 'LANGUAGE', result: 'language', description: 'change language' },
+        ],
+        _Voice_Context_From_Prompt(_Session?.context?.cachedPrompt),
+    );
+    return _Resolved?.result || null;
 }
 
-async function _Resolve_Claim_Hub(_Text, _Language) {
+async function _Resolve_Claim_Hub(_Text, _Language, _Event, _Session) {
     const _Value = _Norm(_Text);
-    const _Direct = {
-        claim_farmer: 'farmer', '1': 'farmer',
-        claim_crop: 'crop', '2': 'crop',
-        claim_date_location: 'date_location', '3': 'date_location',
-        claim_documents: 'documents', '4': 'documents',
-        claim_missing: 'missing', '5': 'missing',
-        claim_photos: 'photos', '6': 'photos',
-        claim_review: 'review', '7': 'review',
-        claim_save_exit: 'save_exit', '8': 'save_exit',
-        claim_abandon: 'abandon', '9': 'abandon',
-    };
-    if (_Direct[_Value]) return _Direct[_Value];
-    try {
-        const _Ai = await _Bedrock._Interpret_Message('CLAIM_HUB', _Text, [
-            { key: 'FARMER', description: 'farmer details section' },
-            { key: 'CROP', description: 'crop details section' },
-            { key: 'DATE_LOCATION', description: 'date and location section' },
-            { key: 'DOCUMENTS', description: 'documents section' },
-            { key: 'MISSING', description: 'missing fields section' },
-            { key: 'PHOTOS', description: 'photo evidence section' },
-            { key: 'REVIEW', description: 'review and submit section' },
-            { key: 'SAVE_EXIT', description: 'save and exit' },
-            { key: 'ABANDON', description: 'abandon the active claim' },
-        ], _Language);
-        return {
-            FARMER: 'farmer',
-            CROP: 'crop',
-            DATE_LOCATION: 'date_location',
-            DOCUMENTS: 'documents',
-            MISSING: 'missing',
-            PHOTOS: 'photos',
-            REVIEW: 'review',
-            SAVE_EXIT: 'save_exit',
-            ABANDON: 'abandon',
-        }[_Ai.action] || null;
-    } catch (_Error) {
-        return null;
-    }
+    const _Direct_Groups = [
+        { result: 'farmer', aliases: ['claim_farmer', '1', 'farmer', 'farmer details'] },
+        { result: 'crop', aliases: ['claim_crop', '2', 'crop', 'crop details'] },
+        { result: 'date_location', aliases: ['claim_date_location', '3', 'date location', 'date and location', 'loss date', 'location'] },
+        { result: 'documents', aliases: ['claim_documents', '4', 'documents', 'document', 'docs', 'upload documents'] },
+        { result: 'template', aliases: ['claim_template', '5', 'template', 'insurer form', 'company form'] },
+        { result: 'missing', aliases: ['claim_missing', '6', 'missing fields', 'missing', 'pending fields'] },
+        { result: 'photos', aliases: ['claim_photos', '7', 'photos', 'photo evidence', 'pictures', 'images'] },
+        { result: 'review', aliases: ['claim_review', '8', 'review', 'review and submit', 'submit'] },
+        { result: 'save_exit', aliases: ['claim_save_exit', '9', 'save and exit', 'save exit'] },
+        { result: 'abandon', aliases: ['claim_abandon', '10', 'abandon', 'discard claim', 'delete claim'] },
+    ];
+    const _Matched = _Direct_Groups.find((_Entry) => _Entry.aliases.some((_Alias) => _Norm(_Alias) === _Value));
+    if (_Matched) return _Matched.result;
+
+    if (!_Is_Voice_Event(_Event)) return null;
+
+    const _Resolved = await _Resolve_Voice_Static_Result(
+        _States.CLAIM_HUB,
+        _Text,
+        _Language,
+        null,
+        _Voice_Context_From_Prompt(_Session?.context?.cachedPrompt),
+    );
+    return _Resolved?.result || null;
 }
 
 function _Parse_Language(_Text) {
@@ -2089,10 +2424,57 @@ async function _Invoke_Voice(_Media_Data, _Language, _Claim_Id) {
         }));
         const _Result = JSON.parse(new TextDecoder().decode(_Response.Payload));
         const _Body = typeof _Result.body === 'string' ? JSON.parse(_Result.body) : _Result;
-        return _Body.transcription || '';
+        if (_Response.FunctionError) {
+            return {
+                ok: false,
+                transcription: '',
+                errorCode: 'VOICE_PROCESSOR_LAMBDA_ERROR',
+                errorMessage: _Body?.errorMessage || _Response.FunctionError,
+            };
+        }
+        return {
+            ok: Boolean(_Body?.ok),
+            transcription: _Body?.transcription || '',
+            errorCode: _Body?.errorCode || null,
+            errorMessage: _Body?.errorMessage || null,
+            contentType: _Body?.contentType || '',
+            mediaFormat: _Body?.mediaFormat || null,
+            transcribeLanguage: _Body?.transcribeLanguage || null,
+        };
     } catch (_Error) {
         console.error('Voice processor invocation failed:', _Error);
-        return '';
+        return {
+            ok: false,
+            transcription: '',
+            errorCode: 'VOICE_PROCESSOR_INVOKE_FAILED',
+            errorMessage: _Error.message,
+        };
+    }
+}
+
+function _Voice_Error_Message(_Voice_Result = {}) {
+    switch (_Voice_Result.errorCode) {
+    case 'VOICE_MEDIA_ID_MISSING':
+    case 'META_MEDIA_LOOKUP_FAILED':
+    case 'META_MEDIA_URL_MISSING':
+    case 'META_MEDIA_DOWNLOAD_FAILED':
+    case 'META_MEDIA_EMPTY':
+    case 'META_MEDIA_EXCEPTION':
+    case 'VOICE_MEDIA_DOWNLOAD_FAILED':
+        return 'I could not download that voice note from WhatsApp. Please send the voice note again as a fresh WhatsApp recording, or send text.';
+    case 'VOICE_UNSUPPORTED_FORMAT':
+        return 'That audio format is not supported yet. Please send a normal WhatsApp voice note, or send text.';
+    case 'VOICE_TRANSCRIPTION_TIMEOUT':
+        return 'That voice note took too long to process. Please send a shorter voice note, or send text.';
+    case 'VOICE_TRANSCRIPTION_FAILED':
+    case 'VOICE_TRANSCRIPTION_UNAVAILABLE':
+        return 'I could not transcribe that voice note clearly. Please send a shorter, clearer voice note, or send text.';
+    case 'VOICE_PROCESSOR_LAMBDA_ERROR':
+    case 'VOICE_PROCESSOR_INVOKE_FAILED':
+    case 'VOICE_PROCESSING_EXCEPTION':
+        return 'Voice processing is unavailable right now. Please send text for now.';
+    default:
+        return 'I could not understand that voice note. Please send text, or send the voice note again.';
     }
 }
 

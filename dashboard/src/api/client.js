@@ -40,10 +40,10 @@ async function request(path, options = {}) {
 
 // ── Auth ──
 
-async function sendOtp(phoneNumber) {
+async function sendOtp(phoneNumber, role = 'operator') {
     return request('/auth', {
         method: 'POST',
-        body: JSON.stringify({ action: 'send_otp', phoneNumber }),
+        body: JSON.stringify({ action: 'send_otp', phoneNumber, role }),
     });
 }
 

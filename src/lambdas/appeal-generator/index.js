@@ -7,10 +7,11 @@
  *   3. Uploads to S3 and returns a pre-signed URL
  */
 
-const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+const { PDFDocument, StandardFonts, rgb } = require('../../vendor/pdf-lib');
 const _Bedrock = require('../../shared/bedrock');
 const _S3_Helper = require('../../shared/s3');
 const _DB = require('../../shared/dynamodb');
+const { _Sanitize_PDF_Text, _Wrap_PDF_Text } = require('../../shared/pdf-text');
 
 
 exports.handler = async (_Event) => {
@@ -63,17 +64,18 @@ async function _Build_Appeal_PDF(_Claim_Id, _Data, _Appeal_Text) {
     const _Font = await _Doc.embedFont(StandardFonts.TimesRoman);
     const _Bold = await _Doc.embedFont(StandardFonts.TimesRomanBold);
     const _Page = _Doc.addPage([595, 842]);
+    _Wrap_Page_Text(_Page);
     const _C = rgb(0.1, 0.1, 0.1);
     const _Red = rgb(0.6, 0.0, 0.0);
     let _Y = 760;
 
     // Header
-    _Page.drawText('FORMAL APPEAL LETTER', { x: 180, y: _Y, size: 14, font: _Bold, color: _Red });
+    _Page.drawText(_Sanitize_PDF_Text('FORMAL APPEAL LETTER'), { x: 180, y: _Y, size: 14, font: _Bold, color: _Red });
     _Y -= 10;
     _Page.drawLine({ start: { x: 50, y: _Y }, end: { x: 545, y: _Y }, thickness: 1.5, color: _Red });
     _Y -= 20;
-    _Page.drawText(`Claim ID: ${_Claim_Id}`, { x: 50, y: _Y, size: 10, font: _Font, color: _C });
-    _Page.drawText(`Date: ${new Date().toLocaleDateString('en-IN')}`, { x: 400, y: _Y, size: 10, font: _Font, color: _C });
+    _Page.drawText(_Sanitize_PDF_Text(`Claim ID: ${_Claim_Id}`), { x: 50, y: _Y, size: 10, font: _Font, color: _C });
+    _Page.drawText(_Sanitize_PDF_Text(`Date: ${new Date().toLocaleDateString('en-IN')}`), { x: 400, y: _Y, size: 10, font: _Font, color: _C });
     _Y -= 30;
 
     // Body text
@@ -84,7 +86,7 @@ async function _Build_Appeal_PDF(_Claim_Id, _Data, _Appeal_Text) {
         _Y -= 16;
     }
 
-    _Page.drawText('Filed via BimaSathi — AI-Powered Crop Insurance Claim Assistant', { x: 120, y: 30, size: 8, font: _Font, color: rgb(0.5, 0.5, 0.5) });
+    _Page.drawText(_Sanitize_PDF_Text('Filed via BimaSathi - AI-Powered Crop Insurance Claim Assistant'), { x: 120, y: 30, size: 8, font: _Font, color: rgb(0.5, 0.5, 0.5) });
 
     return Buffer.from(await _Doc.save());
 }
@@ -110,22 +112,15 @@ function _Build_Fallback_Appeal(_Data) {
 
 
 function _Split_Text(_Text, _Font, _Size, _Max_Width) {
-    const _Words = _Text.split(/\s+/).filter(Boolean);
-    const _Lines = [];
-    let _Current = '';
-    for (const _W of _Words) {
-        const _Test = _Current ? `${_Current} ${_W}` : _W;
-        try {
-            if (_Font.widthOfTextAtSize(_Test, _Size) > _Max_Width && _Current) {
-                _Lines.push(_Current);
-                _Current = _W;
-            } else {
-                _Current = _Test;
-            }
-        } catch (_E) { _Current = _Test; }
-    }
-    if (_Current) _Lines.push(_Current);
-    return _Lines;
+    return _Wrap_PDF_Text(_Text, _Font, _Size, _Max_Width);
+}
+
+function _Wrap_Page_Text(_Page) {
+    if (_Page._bimaSafeTextWrapped) return _Page;
+    const _Original_Draw_Text = _Page.drawText.bind(_Page);
+    _Page.drawText = (_Text, _Options) => _Original_Draw_Text(_Sanitize_PDF_Text(_Text), _Options);
+    _Page._bimaSafeTextWrapped = true;
+    return _Page;
 }
 
 

@@ -239,30 +239,81 @@ function _Validate_Signature(_Signature_Header, _Raw_Body, _App_Secret) {
 }
 
 async function _Download_Media(_Media_ID) {
-    if (!_Media_ID || !_Access_Token) return { buffer: null, contentType: '' };
+    if (!_Media_ID) {
+        return { buffer: null, contentType: '', error: 'MISSING_MEDIA_ID', statusCode: null };
+    }
+    if (!_Access_Token) {
+        return { buffer: null, contentType: '', error: 'MISSING_META_TOKEN', statusCode: null };
+    }
 
     try {
-        // Step 1: Get media URL from Meta
+        // Step 1: Resolve the media ID to a temporary download URL.
         const _Meta_URL = `https://graph.facebook.com/v18.0/${_Media_ID}`;
         const _URL_Response = await fetch(_Meta_URL, {
             headers: { 'Authorization': `Bearer ${_Access_Token}` }
         });
-        const _URL_Data = await _URL_Response.json();
 
-        if (!_URL_Data.url) return { buffer: null, contentType: '' };
+        let _URL_Data = {};
+        try {
+            _URL_Data = await _URL_Response.json();
+        } catch (_Json_Error) {
+            console.error('Meta media metadata was not valid JSON:', _Json_Error.message);
+        }
 
-        // Step 2: Download actual binary media file
+        if (!_URL_Response.ok) {
+            const _Error_Code = _URL_Data?.error?.code || _URL_Response.status;
+            console.error(`Meta media metadata lookup failed: status=${_URL_Response.status}, code=${_Error_Code}`);
+            return {
+                buffer: null,
+                contentType: '',
+                error: 'META_MEDIA_LOOKUP_FAILED',
+                statusCode: _URL_Response.status,
+                metaError: _URL_Data?.error || null,
+            };
+        }
+
+        if (!_URL_Data.url) {
+            console.error('Meta media metadata did not include a download URL');
+            return { buffer: null, contentType: '', error: 'META_MEDIA_URL_MISSING', statusCode: _URL_Response.status };
+        }
+
+        // Step 2: Download the actual binary media file.
         const _Media_Response = await fetch(_URL_Data.url, {
             headers: { 'Authorization': `Bearer ${_Access_Token}` }
         });
 
+        if (!_Media_Response.ok) {
+            console.error(`Meta media download failed: status=${_Media_Response.status}, mediaId=${_Media_ID}`);
+            return {
+                buffer: null,
+                contentType: _URL_Data.mime_type || '',
+                error: 'META_MEDIA_DOWNLOAD_FAILED',
+                statusCode: _Media_Response.status,
+            };
+        }
+
         const _Buffer = Buffer.from(await _Media_Response.arrayBuffer());
+        if (!_Buffer.length) {
+            console.error(`Meta media download returned an empty body: mediaId=${_Media_ID}`);
+            return {
+                buffer: null,
+                contentType: _URL_Data.mime_type || _Media_Response.headers.get('content-type') || '',
+                error: 'META_MEDIA_EMPTY',
+                statusCode: _Media_Response.status,
+            };
+        }
+
         const _Content_Type = _URL_Data.mime_type || _Media_Response.headers.get('content-type') || 'application/octet-stream';
 
-        return { buffer: _Buffer, contentType: _Content_Type };
+        return {
+            buffer: _Buffer,
+            contentType: _Content_Type,
+            statusCode: _Media_Response.status,
+            error: null,
+        };
     } catch (error) {
         console.error('Failed to download Meta media:', error.message);
-        return { buffer: null, contentType: '' };
+        return { buffer: null, contentType: '', error: 'META_MEDIA_EXCEPTION', statusCode: null };
     }
 }
 

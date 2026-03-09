@@ -29,12 +29,10 @@ export function AuthProvider({ children }) {
 
     const sendOtp = useCallback(async (phoneNumber) => {
         try {
-            await api.sendOtp(phoneNumber)
-            return { success: true }
+            return await api.sendOtp(phoneNumber)
         } catch (err) {
-            // In demo mode, pretend OTP was sent
-            console.warn('OTP API unavailable, using demo mode:', err.message)
-            return { success: true, demo: true }
+            console.error('OTP send failed:', err.message)
+            throw err
         }
     }, [])
 

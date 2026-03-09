@@ -10,33 +10,46 @@
  * Uses pdf-lib for pure-JS PDF generation (no native dependencies).
  */
 
-const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+const { PDFDocument, StandardFonts, rgb } = require('../../vendor/pdf-lib');
 const _S3_Helper = require('../../shared/s3');
 const _Bedrock = require('../../shared/bedrock');
 const _DB = require('../../shared/dynamodb');
 const _WhatsApp = require('../../shared/whatsapp');
+const _Template_Renderer = require('../../shared/pdf-template-renderer');
+const { _Sanitize_PDF_Text, _Wrap_PDF_Text } = require('../../shared/pdf-text');
 
 exports.handler = async (_Event) => {
-    const { claimId, claimData } = _Event;
+    const { claimId, claimData, notifyUser = true } = _Event || {};
+    let _Claim_Data = claimData || {};
+    const _Claim_Id = claimId || _Claim_Data.claimId;
 
     try {
-        const _Result = await _Generate_Claim_Pack(claimId, claimData);
+        if (!_Claim_Id) throw new Error('claimId is required');
+        if ((!_Claim_Data.userId || !_Claim_Data.phoneNumber || !_Claim_Data.farmerName) && _Claim_Id) {
+            const _Stored_Claim = await _DB._Get_Claim_By_Id(_Claim_Id);
+            if (_Stored_Claim) _Claim_Data = { ..._Stored_Claim, ..._Claim_Data };
+        }
+
+        const _Result = await _Generate_Claim_Pack(_Claim_Id, _Claim_Data);
 
         // ── Since generation can take 10-15s, we notify the user asynchronously ──
-        if (claimData.phoneNumber) {
-            const _Phone = 'whatsapp:' + claimData.phoneNumber;
-            const _Lang = claimData.language || 'hi';
+        if (notifyUser !== false && _Claim_Data.phoneNumber) {
+            const _Phone = 'whatsapp:' + _Claim_Data.phoneNumber;
+            const _Lang = _Claim_Data.language || 'hi';
 
             let _Company_Name = 'Insurance';
-            if (claimData.company) {
+            if (_Claim_Data.company) {
                 try {
                     const { _Company_Templates } = require('../../shared/insurance-templates');
-                    const _Template = _Company_Templates[claimData.company];
+                    const _Template = _Company_Templates[_Claim_Data.company];
                     if (_Template) _Company_Name = _Template.name;
                 } catch (e) { }
             }
 
-            let _Done_Msg = `Your ${_Company_Name} claim document is ready.\n\nDownload PDF: ${_Result.presignedUrl}`;
+            let _Done_Msg = `Your ${_Company_Name} claim document is ready.\n\nDownload claim pack PDF: ${_Result.presignedUrl}`;
+            if (_Result.insurerFormUrl) {
+                _Done_Msg += `\n\nDownload filled insurer form: ${_Result.insurerFormUrl}`;
+            }
             if (_Lang !== 'en') {
                 _Done_Msg = await _Bedrock._Translate_Text(_Done_Msg, _Lang);
             }
@@ -48,9 +61,9 @@ exports.handler = async (_Event) => {
     } catch (_Error) {
         console.error('Claim Generation failed:', _Error);
 
-        if (claimData.phoneNumber) {
-            const _Phone = 'whatsapp:' + claimData.phoneNumber;
-            const _Lang = claimData.language || 'hi';
+        if (notifyUser !== false && _Claim_Data.phoneNumber) {
+            const _Phone = 'whatsapp:' + _Claim_Data.phoneNumber;
+            const _Lang = _Claim_Data.language || 'hi';
             let _Err_Msg = 'We encountered an error generating your document. Please try again from the claim hub.';
             if (_Lang !== 'en') {
                 _Err_Msg = await _Bedrock._Translate_Text(_Err_Msg, _Lang);
@@ -73,39 +86,84 @@ exports.handler = async (_Event) => {
 async function _Generate_Claim_Pack(_Claim_Id, _Data) {
     console.log(`Generating claim pack for ${_Claim_Id}`);
 
+    let _Claim_Data = _Data || {};
+    if ((!_Claim_Data.userId || !_Claim_Data.farmerName) && _Claim_Id) {
+        const _Stored_Claim = await _DB._Get_Claim_By_Id(_Claim_Id);
+        if (_Stored_Claim) _Claim_Data = { ..._Stored_Claim, ..._Claim_Data };
+    }
+
     // Generate AI claim narrative
     let _Narrative = '';
     try {
-        _Narrative = await _Bedrock._Generate_Claim_Narrative(_Data);
+        _Narrative = await _Bedrock._Generate_Claim_Narrative(_Claim_Data);
         console.log('Generated claim narrative via Bedrock');
     } catch (_Err) {
         console.error('Narrative generation failed, continuing without:', _Err.message);
     }
 
-    const _Enriched_Data = { ..._Data, narrative: _Narrative };
+    const _Enriched_Data = { ..._Claim_Data, narrative: _Narrative };
+
+    let _Insurer_Form = null;
+    try {
+        const _Template_Id = _Claim_Data.selectedTemplateId || _Claim_Data.company;
+        if (_Template_Id) {
+            _Insurer_Form = await _Template_Renderer._Render_Insurer_Form(_Template_Id, _Enriched_Data);
+            console.log(`Rendered insurer template ${_Template_Id} for ${_Claim_Id}`);
+        }
+    } catch (_Err) {
+        console.error('Insurer form rendering failed, continuing without it:', _Err.message);
+    }
 
     const _Claim_Form_PDF = await _Build_Claim_Form_PDF(_Claim_Id, _Enriched_Data);
     const _Evidence_Report_PDF = await _Build_Evidence_Report_PDF(_Claim_Id, _Enriched_Data);
     const _Cover_Letter_PDF = await _Build_Cover_Letter_PDF(_Claim_Id, _Enriched_Data);
-    const _Bundled_Pack_PDF = await _Bundle_PDFs(_Cover_Letter_PDF, _Claim_Form_PDF, _Evidence_Report_PDF);
+    const _Bundle_Inputs = [_Cover_Letter_PDF, _Claim_Form_PDF, _Evidence_Report_PDF];
+    if (_Insurer_Form?.buffer) _Bundle_Inputs.splice(1, 0, _Insurer_Form.buffer);
+    const _Bundled_Pack_PDF = await _Bundle_PDFs(..._Bundle_Inputs);
 
-    const [_Key_Form, _Key_Evidence, _Key_Cover, _Key_Pack, _Key_Final] = await Promise.all([
+    const _Uploads = [
         _S3_Helper._Upload_Document(_Claim_Id, 'claim_form.pdf', _Claim_Form_PDF),
         _S3_Helper._Upload_Document(_Claim_Id, 'evidence_report.pdf', _Evidence_Report_PDF),
         _S3_Helper._Upload_Document(_Claim_Id, 'cover_letter.pdf', _Cover_Letter_PDF),
         _S3_Helper._Upload_Document(_Claim_Id, 'claim_pack.pdf', _Bundled_Pack_PDF),
         _S3_Helper._Upload_Document(_Claim_Id, 'final_claim_pack.pdf', _Bundled_Pack_PDF),
-    ]);
+    ];
+    if (_Insurer_Form?.buffer) {
+        const _Filename = `${(_Data.selectedTemplateId || _Data.company || 'insurer_form').toString().toLowerCase()}_filled_form.pdf`;
+        _Uploads.push(_S3_Helper._Upload_Document(_Claim_Id, _Filename, _Insurer_Form.buffer));
+    }
+
+    const _Keys = await Promise.all(_Uploads);
+    const [_Key_Form, _Key_Evidence, _Key_Cover, _Key_Pack, _Key_Final, _Key_Insurer] = _Keys;
 
     await _S3_Helper._Generate_Evidence_Manifest(_Claim_Id);
     const _Pack_URL = await _S3_Helper._Get_Presigned_URL(_Key_Final, 7 * 24 * 3600);
+    const _Insurer_URL = _Key_Insurer ? await _S3_Helper._Get_Presigned_URL(_Key_Insurer, 7 * 24 * 3600) : null;
+
+    if (_Claim_Data.userId) {
+        try {
+            await _DB._Update_Claim(_Claim_Id, _Claim_Data.userId, {
+                generatedDocuments: {
+                    claimFormKey: _Key_Form,
+                    evidenceReportKey: _Key_Evidence,
+                    coverLetterKey: _Key_Cover,
+                    claimPackKey: _Key_Pack,
+                    finalClaimPackKey: _Key_Final,
+                    insurerFormKey: _Key_Insurer || null,
+                },
+                lastGeneratedAt: new Date().toISOString(),
+            });
+        } catch (_Err) {
+            console.error('Generated document metadata update failed:', _Err.message);
+        }
+    }
 
     // Do not regress a submitted claim back into an intermediate status.
-    if (_Data.userId) {
+    if (_Claim_Data.userId) {
         try {
             const _Existing = await _DB._Get_Claim_By_Id(_Claim_Id);
             if (_Existing?.status !== 'Submitted') {
-                await _DB._Update_Claim(_Claim_Id, _Data.userId, { status: 'Ready for Submission' });
+                await _DB._Update_Claim(_Claim_Id, _Claim_Data.userId, { status: 'Ready for Submission' });
             }
         } catch (_Err) {
             console.error('Status update failed:', _Err.message);
@@ -118,6 +176,9 @@ async function _Generate_Claim_Pack(_Claim_Id, _Data) {
         coverLetterKey: _Key_Cover,
         claimPackKey: _Key_Pack,
         finalClaimPackKey: _Key_Final,
+        insurerFormKey: _Key_Insurer || null,
+        insurerFormUrl: _Insurer_URL,
+        insurerFormAppendixFields: _Insurer_Form?.appendixFields || [],
         presignedUrl: _Pack_URL,
     };
 }
@@ -132,6 +193,7 @@ async function _Build_Claim_Form_PDF(_Claim_Id, _D) {
     const _Font = await _Doc.embedFont(StandardFonts.Helvetica);
     const _Bold = await _Doc.embedFont(StandardFonts.HelveticaBold);
     const _Page = _Doc.addPage([595, 842]);
+    _Wrap_Page_Text(_Page);
 
     const _Blue = rgb(0.1, 0.3, 0.6);
     const _Text = rgb(0.15, 0.15, 0.15);
@@ -213,13 +275,13 @@ async function _Build_Claim_Form_PDF(_Claim_Id, _D) {
     _Y -= 25;
 
     // Declaration
-    _Page.drawText('DECLARATION', { x: 50, y: _Y, size: 11, font: _Bold, color: _Blue });
+    _Page.drawText(_Sanitize_PDF_Text('DECLARATION'), { x: 50, y: _Y, size: 11, font: _Bold, color: _Blue });
     _Y -= 18;
     const _Decl = 'I declare that the information above is true and correct. I authorize the insurance company to verify and process my claim.';
     for (const _Line of _Split_Text(_Decl, _Font, 10, 480)) { _Page.drawText(_Line, { x: 50, y: _Y, size: 10, font: _Font, color: _Text }); _Y -= 15; }
     _Y -= 20;
-    _Page.drawText(`Farmer: ${_D.farmerName || '___'}`, { x: 50, y: _Y, size: 10, font: _Font, color: _Text });
-    _Page.drawText(`Date: ${new Date().toLocaleDateString('en-IN')}`, { x: 350, y: _Y, size: 10, font: _Font, color: _Text });
+    _Page.drawText(_Sanitize_PDF_Text(`Farmer: ${_D.farmerName || '___'}`), { x: 50, y: _Y, size: 10, font: _Font, color: _Text });
+    _Page.drawText(_Sanitize_PDF_Text(`Date: ${new Date().toLocaleDateString('en-IN')}`), { x: 350, y: _Y, size: 10, font: _Font, color: _Text });
 
     // Section D: AI-Generated Claim Narrative (if available)
     if (_D.narrative) {
@@ -244,6 +306,7 @@ async function _Build_Evidence_Report_PDF(_Claim_Id, _D) {
     const _Font = await _Doc.embedFont(StandardFonts.Helvetica);
     const _Bold = await _Doc.embedFont(StandardFonts.HelveticaBold);
     const _Page = _Doc.addPage([595, 842]);
+    _Wrap_Page_Text(_Page);
 
     const _Blue = rgb(0.1, 0.3, 0.6);
     const _Text = rgb(0.15, 0.15, 0.15);
@@ -285,6 +348,7 @@ async function _Build_Cover_Letter_PDF(_Claim_Id, _D) {
     const _Font = await _Doc.embedFont(StandardFonts.TimesRoman);
     const _Bold = await _Doc.embedFont(StandardFonts.TimesRomanBold);
     const _Page = _Doc.addPage([595, 842]);
+    _Wrap_Page_Text(_Page);
     const _C = rgb(0.1, 0.1, 0.1);
     let _Y = 760;
 
@@ -307,25 +371,25 @@ async function _Build_Cover_Letter_PDF(_Claim_Id, _D) {
     for (const _L of _Split_Text(_Body_2, _Font, 11, 490)) { _Page.drawText(_L, { x: 50, y: _Y, size: 11, font: _Font, color: _C }); _Y -= 16; }
     _Y -= 10;
 
-    _Page.drawText('Supporting documents attached:', { x: 50, y: _Y, size: 11, font: _Font, color: _C }); _Y -= 18;
+    _Page.drawText(_Sanitize_PDF_Text('Supporting documents attached:'), { x: 50, y: _Y, size: 11, font: _Font, color: _C }); _Y -= 18;
     for (const _Att of ['1. Duly filled Claim Form', '2. Evidence Report (AI-verified)', '3. GPS-verified field data', '4. SHA-256 integrity verification']) {
-        _Page.drawText(_Att, { x: 70, y: _Y, size: 10, font: _Font, color: _C }); _Y -= 15;
+        _Page.drawText(_Sanitize_PDF_Text(_Att), { x: 70, y: _Y, size: 10, font: _Font, color: _C }); _Y -= 15;
     }
     _Y -= 10;
-    _Page.drawText('Kindly process my claim at the earliest.', { x: 50, y: _Y, size: 11, font: _Font, color: _C }); _Y -= 30;
+    _Page.drawText(_Sanitize_PDF_Text('Kindly process my claim at the earliest.'), { x: 50, y: _Y, size: 11, font: _Font, color: _C }); _Y -= 30;
 
-    for (const _L of ['Thanking you,', 'Yours faithfully,']) { _Page.drawText(_L, { x: 50, y: _Y, size: 11, font: _Font, color: _C }); _Y -= 18; }
-    _Page.drawText(_D.farmerName || 'Farmer', { x: 50, y: _Y, size: 12, font: _Bold, color: _C }); _Y -= 15;
-    _Page.drawText(`Claim ID: ${_Claim_Id}`, { x: 50, y: _Y, size: 10, font: _Font, color: _C });
+    for (const _L of ['Thanking you,', 'Yours faithfully,']) { _Page.drawText(_Sanitize_PDF_Text(_L), { x: 50, y: _Y, size: 11, font: _Font, color: _C }); _Y -= 18; }
+    _Page.drawText(_Sanitize_PDF_Text(_D.farmerName || 'Farmer'), { x: 50, y: _Y, size: 12, font: _Bold, color: _C }); _Y -= 15;
+    _Page.drawText(_Sanitize_PDF_Text(`Claim ID: ${_Claim_Id}`), { x: 50, y: _Y, size: 10, font: _Font, color: _C });
 
-    _Page.drawText('Filed via BimaSathi', { x: 220, y: 30, size: 8, font: _Font, color: rgb(0.5, 0.5, 0.5) });
+    _Page.drawText(_Sanitize_PDF_Text('Filed via BimaSathi'), { x: 220, y: 30, size: 8, font: _Font, color: rgb(0.5, 0.5, 0.5) });
     return Buffer.from(await _Doc.save());
 }
 
 
-async function _Bundle_PDFs(_Cover, _Form, _Evidence) {
+async function _Bundle_PDFs(..._Buffers) {
     const _Merged = await PDFDocument.create();
-    for (const _Buf of [_Cover, _Form, _Evidence]) {
+    for (const _Buf of _Buffers.filter(Boolean)) {
         const _Src = await PDFDocument.load(_Buf);
         const _Pages = await _Merged.copyPages(_Src, _Src.getPageIndices());
         _Pages.forEach(_P => _Merged.addPage(_P));
@@ -340,29 +404,27 @@ async function _Bundle_PDFs(_Cover, _Form, _Evidence) {
 
 function _Draw_Section_Header(_Page, _Text, _Y, _Font, _Color) {
     _Page.drawRectangle({ x: 45, y: _Y - 5, width: 500, height: 20, color: rgb(0.93, 0.95, 0.98) });
-    _Page.drawText(_Text, { x: 50, y: _Y, size: 11, font: _Font, color: _Color });
+    _Page.drawText(_Sanitize_PDF_Text(_Text), { x: 50, y: _Y, size: 11, font: _Font, color: _Color });
     return _Y - 25;
 }
 
 function _Draw_Form_Field(_Page, _Label, _Value, _Y, _Font, _Bold_Font) {
-    _Page.drawText(`${_Label}:`, { x: 50, y: _Y, size: 10, font: _Bold_Font, color: rgb(0.3, 0.3, 0.3) });
-    _Page.drawText(_Value, { x: 200, y: _Y, size: 10, font: _Font, color: rgb(0.15, 0.15, 0.15) });
+    _Page.drawText(_Sanitize_PDF_Text(`${_Label}:`), { x: 50, y: _Y, size: 10, font: _Bold_Font, color: rgb(0.3, 0.3, 0.3) });
+    _Page.drawText(_Sanitize_PDF_Text(_Value), { x: 200, y: _Y, size: 10, font: _Font, color: rgb(0.15, 0.15, 0.15) });
     _Page.drawLine({ start: { x: 198, y: _Y - 3 }, end: { x: 540, y: _Y - 3 }, thickness: 0.5, color: rgb(0.85, 0.85, 0.85) });
     return _Y - 18;
 }
 
 function _Split_Text(_Text, _Font, _Size, _Max_Width) {
-    const _Words = _Text.split(' ');
-    const _Lines = [];
-    let _Current = '';
-    for (const _W of _Words) {
-        const _Test = _Current ? `${_Current} ${_W}` : _W;
-        if (_Font.widthOfTextAtSize(_Test, _Size) > _Max_Width && _Current) {
-            _Lines.push(_Current); _Current = _W;
-        } else { _Current = _Test; }
-    }
-    if (_Current) _Lines.push(_Current);
-    return _Lines;
+    return _Wrap_PDF_Text(_Text, _Font, _Size, _Max_Width);
+}
+
+function _Wrap_Page_Text(_Page) {
+    if (_Page._bimaSafeTextWrapped) return _Page;
+    const _Original_Draw_Text = _Page.drawText.bind(_Page);
+    _Page.drawText = (_Text, _Options) => _Original_Draw_Text(_Sanitize_PDF_Text(_Text), _Options);
+    _Page._bimaSafeTextWrapped = true;
+    return _Page;
 }
 
 function _Capitalize(_Str) {

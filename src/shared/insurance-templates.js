@@ -1,54 +1,806 @@
 /**
- * BimaSathi — Insurance Company Form Templates
- * Definitions of required fields for each insurance company's claim form.
+ * BimaSathi - Insurance template registry
+ *
+ * This module now carries deterministic insurer-template metadata for the
+ * known flat PDF forms. It is intentionally renderer-agnostic: the remaining
+ * manual work is coordinate authoring, not business logic.
+ *
+ * Backward compatibility:
+ * - `_Company_Templates[claimData.company]` still works for the generator
+ * - each template still exposes a flat `.fields` list
  */
 
-const _Company_Templates = {
-    SBI: {
-        id: 'SBI',
+const _Requirement_Mode = Object.freeze({
+    YES: 'yes',
+    NO: 'no',
+    CONDITIONAL: 'conditional',
+    OPERATOR_ONLY: 'operator_only',
+});
+
+const _Checkbox_Behavior = Object.freeze({
+    NOT_APPLICABLE: 'n/a',
+    ONE_OF_MANY: 'one_of_many',
+    YES_NO: 'yes_no',
+    DERIVED_YES_ONLY: 'derived_yes_only',
+    MULTI_SELECT: 'multi_select',
+});
+
+function _Field(_Definition) {
+    const _Required_Mode = _Definition.required_mode || _Requirement_Mode.NO;
+    return Object.freeze({
+        ..._Definition,
+        required_mode: _Required_Mode,
+        required: _Required_Mode === _Requirement_Mode.YES,
+        checkbox_behavior: _Definition.checkbox_behavior || _Checkbox_Behavior.NOT_APPLICABLE,
+    });
+}
+
+function _Template(_Definition) {
+    return Object.freeze({
+        ..._Definition,
+        fields: Object.freeze(_Definition.fields.map(_Field)),
+        required_for_generation: Object.freeze([...( _Definition.required_for_generation || [] )]),
+        leave_blank_by_default: Object.freeze([...( _Definition.leave_blank_by_default || [] )]),
+        checkbox_groups: Object.freeze([...( _Definition.checkbox_groups || [] )].map((_Group) => Object.freeze({
+            ..._Group,
+            options: Object.freeze([...( _Group.options || [] )]),
+        }))),
+    });
+}
+
+const _Canonical_Templates = Object.freeze({
+    sbi: _Template({
+        id: 'sbi',
+        company_code: 'SBI',
         name: 'SBI General Insurance',
+        asset_filename: 'SBI.pdf',
+        asset_status: 'pending_coordinate_mapping',
+        notes: 'PMFBY claim/intimation form. Flat template with no AcroForm fields.',
+        required_for_generation: [
+            'farmer_name',
+            'father_name_or_spouse_name',
+            'farmer_address',
+            'mobile_number',
+            'aadhaar_number',
+            'bank_account_number',
+            'bank_name',
+            'bank_branch_location',
+            'ifsc_code',
+            'account_type',
+            'has_crop_loan_or_kcc',
+            'insured_field_admin_area',
+            'insured_area_hectare',
+            'crop_name',
+            'loss_date',
+            'place',
+            'form_sign_date',
+        ],
+        leave_blank_by_default: [
+            'micr_code',
+            'farmer_signature_slot',
+            'declaration_text',
+        ],
+        checkbox_groups: [
+            {
+                key: 'social_category',
+                behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                options: ['SC', 'ST', 'OBC', 'OTHERS'],
+            },
+            {
+                key: 'gender',
+                behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                options: ['M', 'F'],
+            },
+            {
+                key: 'account_type',
+                behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                options: ['crop_loan', 'saving_account'],
+            },
+            {
+                key: 'has_crop_loan_or_kcc',
+                behavior: _Checkbox_Behavior.YES_NO,
+                options: ['yes', 'no'],
+            },
+            {
+                key: 'loss_cause_primary',
+                behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                options: [
+                    'risk_hailstorm',
+                    'risk_landslide',
+                    'risk_inundation',
+                    'risk_cyclone',
+                    'risk_cyclonic_rain',
+                    'risk_unseasonal_rain',
+                    'post_harvest_loss_flag',
+                ],
+            },
+            {
+                key: 'post_harvest_drying_reason_flag',
+                behavior: _Checkbox_Behavior.YES_NO,
+                options: ['yes', 'no'],
+            },
+        ],
         fields: [
-            { key: 'farmer_name', label: 'Name of Insured', required: true, type: 'string' },
-            { key: 'village', label: 'Village', required: true, type: 'string' },
-            { key: 'district', label: 'District', required: true, type: 'string' },
-            { key: 'state', label: 'State', required: true, type: 'string' },
-            { key: 'crop_type', label: 'Crop Name', required: true, type: 'string' },
-            { key: 'area_hectares', label: 'Insured Area (Hectares)', required: true, type: 'number' },
-            { key: 'cause', label: 'Cause of Loss', required: true, type: 'string' },
-            { key: 'loss_date', label: 'Date of Loss', required: true, type: 'date' },
-            { key: 'policy_number', label: 'Policy Number', required: true, type: 'string', language_hint: 'Apna Policy Number / KCC Account Number batayein:', english_hint: 'Please provide your Policy Number or KCC Account Number:' },
-            { key: 'bank_account', label: 'Bank Account Number', required: true, type: 'string', language_hint: 'Apna Bank Account Number batayein (claims ke liye):', english_hint: 'Please provide your Bank Account Number for claim settlement:' }
-        ]
-    },
-    HDFC_ERGO: {
+            {
+                key: 'farmer_name',
+                label: 'Name of Farmer',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.farmerName -> identityVerification.verifiedName -> ask_user',
+                notes: 'Prefer verified identity name when available.',
+            },
+            {
+                key: 'father_name_or_spouse_name',
+                label: 'Father\'s Name',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'document.father_name_or_spouse_name -> ask_user',
+                notes: 'Internal field supports father or spouse name even though the PDF says father.',
+            },
+            {
+                key: 'social_category',
+                label: 'Category (SC/ST/OBC/Others)',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.NO,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'gender',
+                label: 'Gender (M/F)',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.YES,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'farmer_address',
+                label: 'Address',
+                type: 'multiline',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.address -> ask_user',
+            },
+            {
+                key: 'mobile_number',
+                label: 'Contact Number',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.phoneNumber -> session.phoneNumber -> ask_user',
+            },
+            {
+                key: 'aadhaar_number',
+                label: 'Aadhaar Number',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'documents.aadhaar_number -> ask_user',
+            },
+            {
+                key: 'bank_account_number',
+                label: 'Bank Account Number',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'documents.bank_account_number -> ask_user',
+            },
+            {
+                key: 'bank_name',
+                label: 'Bank Name',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'documents.bank_name -> ask_user',
+            },
+            {
+                key: 'bank_branch_location',
+                label: 'Branch Location',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'documents.bank_branch_location -> ask_user',
+            },
+            {
+                key: 'ifsc_code',
+                label: 'IFSC CODE',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'documents.ifsc_code -> ask_user',
+            },
+            {
+                key: 'micr_code',
+                label: 'MICR CODE',
+                type: 'text',
+                required_mode: _Requirement_Mode.NO,
+                source_priority: 'documents.micr_code -> ask_user',
+            },
+            {
+                key: 'account_type',
+                label: 'Account Type Crop Loan or Saving Account',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.YES,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'has_crop_loan_or_kcc',
+                label: 'Whether you have availed any loan on crop / or hold KCC YES/NO',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.YES,
+                checkbox_behavior: _Checkbox_Behavior.YES_NO,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'insured_field_admin_area',
+                label: 'District, Block, Grampanchayat of insured field',
+                type: 'multiline',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.fieldAdminArea -> claim.location -> ask_user',
+            },
+            {
+                key: 'insured_area_hectare',
+                label: 'Total Area of Insured ... Hectare',
+                type: 'number',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.areaHectares -> ask_user',
+            },
+            {
+                key: 'crop_name',
+                label: 'Crop under loss',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.cropType -> ask_user',
+            },
+            {
+                key: 'loss_date',
+                label: 'Date of Loss',
+                type: 'date',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.lossDate -> ask_user',
+            },
+            {
+                key: 'loss_event_summary',
+                label: 'Cause of Loss',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.cause -> ask_user',
+                notes: 'Narrative summary, even when cause checkbox is also rendered.',
+            },
+            {
+                key: 'risk_hailstorm',
+                label: 'hailstorm',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'derived_from_claim.cause',
+            },
+            {
+                key: 'risk_landslide',
+                label: 'landslide',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'derived_from_claim.cause',
+            },
+            {
+                key: 'risk_inundation',
+                label: 'Inundation',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'derived_from_claim.cause',
+            },
+            {
+                key: 'post_harvest_loss_flag',
+                label: 'Post Harvesting loss',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'derived_from_claim.cause -> ask_user',
+            },
+            {
+                key: 'risk_cyclone',
+                label: 'Cyclone',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'derived_from_claim.cause',
+            },
+            {
+                key: 'risk_cyclonic_rain',
+                label: 'Cyclonic rains',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'derived_from_claim.cause',
+            },
+            {
+                key: 'risk_unseasonal_rain',
+                label: 'Unseasonal rains',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'derived_from_claim.cause',
+            },
+            {
+                key: 'harvesting_date',
+                label: 'In case of Post-Harvest Losses Date of Harvesting',
+                type: 'date',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                source_priority: 'claim.harvestingDate -> ask_user',
+            },
+            {
+                key: 'post_harvest_storage_reason',
+                label: 'Reason for keeping crop at loss location for Storage',
+                type: 'multiline',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'post_harvest_drying_reason_flag',
+                label: 'To dry in cut and spread condition in the field after harvesting',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                checkbox_behavior: _Checkbox_Behavior.YES_NO,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'post_harvest_other_reason',
+                label: 'Other, please specify the reason',
+                type: 'multiline',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'declaration_text',
+                label: 'Declaration',
+                type: 'static',
+                required_mode: _Requirement_Mode.OPERATOR_ONLY,
+                source_priority: 'template_static',
+            },
+            {
+                key: 'place',
+                label: 'Place',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.village -> ask_user',
+            },
+            {
+                key: 'form_sign_date',
+                label: 'Date',
+                type: 'date',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'system.now -> ask_user',
+            },
+            {
+                key: 'farmer_signature_slot',
+                label: 'Signature - Farmer',
+                type: 'signature_placeholder',
+                required_mode: _Requirement_Mode.OPERATOR_ONLY,
+                source_priority: 'leave_blank',
+            },
+        ],
+    }),
+    icici_lombard: _Template({
+        id: 'icici_lombard',
+        company_code: 'ICICI_LOMBARD',
+        name: 'ICICI Lombard',
+        asset_filename: 'ICICI Lombard.pdf',
+        asset_status: 'pending_coordinate_mapping',
+        notes: 'PMFBY claim intimation form with PEP declaration page. Flat template with no AcroForm fields.',
+        required_for_generation: [
+            'farmer_name',
+            'father_name_or_spouse_name',
+            'mobile_number',
+            'mailing_address',
+            'mailing_village',
+            'mailing_tehsil',
+            'mailing_district',
+            'mailing_state',
+            'mailing_pin_code',
+            'land_address',
+            'land_village',
+            'land_tehsil',
+            'land_district',
+            'land_state',
+            'gender',
+            'crop_season_year',
+            'crop_name',
+            'sowing_date',
+            'crop_stage',
+            'insured_area_hectare',
+            'total_land_hectare',
+            'total_land_insured_hectare',
+            'loanee_status',
+            'survey_or_khasara_or_udyan_no',
+            'notified_area_name',
+            'sum_insured_rupees',
+            'premium_paid_rupees',
+            'premium_deduction_or_cover_note_date',
+            'pep_declaration',
+        ],
+        leave_blank_by_default: [
+            'email',
+            'mailing_post_office',
+            'land_post_office',
+            'land_pin_code',
+            'pep_explanatory_static',
+        ],
+        checkbox_groups: [
+            {
+                key: 'social_category',
+                behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                options: ['SC', 'ST', 'GEN', 'OTHER'],
+            },
+            {
+                key: 'gender',
+                behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                options: ['M', 'F'],
+            },
+            {
+                key: 'loanee_status',
+                behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                options: ['loanee', 'non_loanee'],
+            },
+            {
+                key: 'pep_declaration',
+                behavior: _Checkbox_Behavior.DERIVED_YES_ONLY,
+                options: ['yes'],
+            },
+        ],
+        fields: [
+            {
+                key: 'farmer_name',
+                label: 'Name of the Insured Farmer',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.farmerName -> identityVerification.verifiedName -> ask_user',
+            },
+            {
+                key: 'father_name_or_spouse_name',
+                label: 'Name of the father/Spouse of Insured',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'document.father_name_or_spouse_name -> ask_user',
+            },
+            {
+                key: 'mobile_number',
+                label: 'Mobile No',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.phoneNumber -> ask_user',
+            },
+            {
+                key: 'mailing_address',
+                label: 'Mailing Address',
+                type: 'multiline',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.address -> ask_user',
+            },
+            {
+                key: 'mailing_village',
+                label: 'Village',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.village -> ask_user',
+            },
+            {
+                key: 'mailing_post_office',
+                label: 'Post Office',
+                type: 'text',
+                required_mode: _Requirement_Mode.NO,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'mailing_tehsil',
+                label: 'Tehsil',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.tehsil -> ask_user',
+            },
+            {
+                key: 'mailing_district',
+                label: 'District',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.district -> ask_user',
+            },
+            {
+                key: 'mailing_state',
+                label: 'State',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.state -> ask_user',
+            },
+            {
+                key: 'mailing_pin_code',
+                label: 'Pin Code',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.pinCode -> ask_user',
+            },
+            {
+                key: 'land_address',
+                label: 'Address of Land',
+                type: 'multiline',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.landAddress -> ask_user',
+            },
+            {
+                key: 'land_village',
+                label: 'Village',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.landVillage -> claim.village -> ask_user',
+            },
+            {
+                key: 'land_post_office',
+                label: 'Post Office',
+                type: 'text',
+                required_mode: _Requirement_Mode.NO,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'land_tehsil',
+                label: 'Tehsil',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.landTehsil -> ask_user',
+            },
+            {
+                key: 'land_district',
+                label: 'District',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.landDistrict -> claim.district -> ask_user',
+            },
+            {
+                key: 'land_state',
+                label: 'State',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.landState -> claim.state -> ask_user',
+            },
+            {
+                key: 'land_pin_code',
+                label: 'Pin Code',
+                type: 'text',
+                required_mode: _Requirement_Mode.NO,
+                source_priority: 'claim.landPinCode -> ask_user',
+            },
+            {
+                key: 'email',
+                label: 'Email Id (If available)',
+                type: 'text',
+                required_mode: _Requirement_Mode.NO,
+                source_priority: 'claim.email -> ask_user',
+            },
+            {
+                key: 'social_category',
+                label: 'Cast (SC/ST/ GEN/OTHER)',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.NO,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'ask_user',
+                notes: 'Preserve PDF label as-is, but treat internally as caste/category.',
+            },
+            {
+                key: 'gender',
+                label: 'Gender',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.YES,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'scheme_name',
+                label: 'Scheme',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'static.PMFBY',
+            },
+            {
+                key: 'scheme_name_static',
+                label: 'PMFBY',
+                type: 'static',
+                required_mode: _Requirement_Mode.OPERATOR_ONLY,
+                source_priority: 'template_static',
+            },
+            {
+                key: 'crop_season_year',
+                label: 'Crop Season/Year',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.season -> claim.cropSeasonYear -> ask_user',
+            },
+            {
+                key: 'crop_name',
+                label: 'Crop Name',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.cropType -> ask_user',
+            },
+            {
+                key: 'sowing_date',
+                label: 'Sowing date',
+                type: 'date',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.sowingDate -> ask_user',
+            },
+            {
+                key: 'crop_stage',
+                label: 'Stage of Crop',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.cropStage -> ask_user',
+            },
+            {
+                key: 'proposed_harvest_date',
+                label: 'Proposed date of Harvesting',
+                type: 'date',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                source_priority: 'claim.proposedHarvestDate -> ask_user',
+            },
+            {
+                key: 'harvesting_date',
+                label: 'Harvesting Date (IF already harvested)',
+                type: 'date',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                source_priority: 'claim.harvestingDate -> ask_user',
+            },
+            {
+                key: 'insured_area_hectare',
+                label: 'Crop Acreage (Insured area in Ha)',
+                type: 'number',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.areaHectares -> ask_user',
+            },
+            {
+                key: 'total_land_hectare',
+                label: 'Total Land (Ha)',
+                type: 'number',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.totalLandHectares -> ask_user',
+            },
+            {
+                key: 'total_land_insured_hectare',
+                label: 'Total Land Insured (Ha)',
+                type: 'number',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.totalLandInsuredHectares -> ask_user',
+            },
+            {
+                key: 'loanee_status',
+                label: 'If the Insured is Loanee/Non Loanee',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.YES,
+                checkbox_behavior: _Checkbox_Behavior.ONE_OF_MANY,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'survey_or_khasara_or_udyan_no',
+                label: 'Survey No/Khasara No/Udyan Card No',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'documents.survey_or_khasara_or_udyan_no -> ask_user',
+            },
+            {
+                key: 'notified_area_name',
+                label: 'Name of Notified area',
+                type: 'text',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'claim.notifiedAreaName -> ask_user',
+            },
+            {
+                key: 'sum_insured_rupees',
+                label: 'Sum Insured (Rs)',
+                type: 'number',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'documents.sum_insured_rupees -> ask_user',
+            },
+            {
+                key: 'premium_paid_rupees',
+                label: 'Premium paid by Farmers (Rs)',
+                type: 'number',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'documents.premium_paid_rupees -> ask_user',
+            },
+            {
+                key: 'premium_deduction_or_cover_note_date',
+                label: 'Date of Premium deducted in case of Loanee farmer/Date of Issuance of Cover note in case non loanee farmer',
+                type: 'date',
+                required_mode: _Requirement_Mode.YES,
+                source_priority: 'documents.premium_deduction_or_cover_note_date -> ask_user',
+            },
+            {
+                key: 'pep_declaration',
+                label: 'Are you or any of the proposed applicants a PEP* or Family member / Close relatives / Associates of PEP*?',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.YES,
+                checkbox_behavior: _Checkbox_Behavior.DERIVED_YES_ONLY,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'pep_yes_checkbox',
+                label: 'Yes',
+                type: 'checkbox',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                checkbox_behavior: _Checkbox_Behavior.DERIVED_YES_ONLY,
+                source_priority: 'derived_from.pep_declaration',
+            },
+            {
+                key: 'pep_details',
+                label: 'If yes, please give details (Nature of relationship and position held by PEP)',
+                type: 'multiline',
+                required_mode: _Requirement_Mode.CONDITIONAL,
+                source_priority: 'ask_user',
+            },
+            {
+                key: 'pep_explanatory_static',
+                label: 'PEP footnote / explanatory text',
+                type: 'static',
+                required_mode: _Requirement_Mode.OPERATOR_ONLY,
+                source_priority: 'template_static',
+            },
+        ],
+    }),
+    HDFC_ERGO: _Template({
         id: 'HDFC_ERGO',
+        company_code: 'HDFC_ERGO',
         name: 'HDFC ERGO General Insurance',
+        legacy: true,
+        notes: 'Legacy non-template company definition retained for compatibility.',
         fields: [
-            { key: 'farmer_name', label: 'Farmer Name', required: true, type: 'string' },
-            { key: 'village', label: 'Village', required: true, type: 'string' },
-            { key: 'district', label: 'District', required: true, type: 'string' },
-            { key: 'crop_type', label: 'Crop Insured', required: true, type: 'string' },
-            { key: 'area_hectares', label: 'Area Affected', required: true, type: 'number' },
-            { key: 'cause', label: 'Peril / Cause of Damage', required: true, type: 'string' },
-            { key: 'loss_date', label: 'Date of Occurrence', required: true, type: 'date' },
-            { key: 'application_number', label: 'National Crop Insurance Portal App No.', required: true, type: 'string', language_hint: 'Apna crop insurance Application Number (NCIP) batayein:', english_hint: 'Please provide your NCIP Application Number:' }
-        ]
-    },
-    AIC: {
+            { key: 'farmer_name', label: 'Farmer Name', type: 'text', required_mode: _Requirement_Mode.YES },
+            { key: 'village', label: 'Village', type: 'text', required_mode: _Requirement_Mode.YES },
+            { key: 'district', label: 'District', type: 'text', required_mode: _Requirement_Mode.YES },
+            { key: 'crop_type', label: 'Crop Insured', type: 'text', required_mode: _Requirement_Mode.YES },
+            { key: 'area_hectares', label: 'Area Affected', type: 'number', required_mode: _Requirement_Mode.YES },
+            { key: 'cause', label: 'Peril / Cause of Damage', type: 'text', required_mode: _Requirement_Mode.YES },
+            { key: 'loss_date', label: 'Date of Occurrence', type: 'date', required_mode: _Requirement_Mode.YES },
+            { key: 'application_number', label: 'National Crop Insurance Portal App No.', type: 'text', required_mode: _Requirement_Mode.YES },
+        ],
+    }),
+    AIC: _Template({
         id: 'AIC',
+        company_code: 'AIC',
         name: 'Agriculture Insurance Company (AIC)',
+        legacy: true,
+        notes: 'Legacy non-template company definition retained for compatibility.',
         fields: [
-            { key: 'farmer_name', label: 'Farmer Name', required: true, type: 'string' },
-            { key: 'village', label: 'Village', required: true, type: 'string' },
-            { key: 'crop_type', label: 'Crop', required: true, type: 'string' },
-            { key: 'area_hectares', label: 'Area Sown (Hectares)', required: true, type: 'number' },
-            { key: 'cause', label: 'Cause of Loss', required: true, type: 'string' },
-            { key: 'loss_date', label: 'Date of Loss', required: true, type: 'date' },
-            { key: 'aadhar_number', label: 'Aadhar Number', required: true, type: 'string', language_hint: 'Apna Aadhar Number batayein (12 digits):', english_hint: 'Please provide your 12-digit Aadhar Number:' }
-        ]
+            { key: 'farmer_name', label: 'Farmer Name', type: 'text', required_mode: _Requirement_Mode.YES },
+            { key: 'village', label: 'Village', type: 'text', required_mode: _Requirement_Mode.YES },
+            { key: 'crop_type', label: 'Crop', type: 'text', required_mode: _Requirement_Mode.YES },
+            { key: 'area_hectares', label: 'Area Sown (Hectares)', type: 'number', required_mode: _Requirement_Mode.YES },
+            { key: 'cause', label: 'Cause of Loss', type: 'text', required_mode: _Requirement_Mode.YES },
+            { key: 'loss_date', label: 'Date of Loss', type: 'date', required_mode: _Requirement_Mode.YES },
+            { key: 'aadhar_number', label: 'Aadhar Number', type: 'text', required_mode: _Requirement_Mode.YES },
+        ],
+    }),
+});
+
+function _Index_Templates() {
+    const _Index = {};
+    for (const _Template of Object.values(_Canonical_Templates)) {
+        _Index[_Template.id] = _Template;
+        if (_Template.company_code) _Index[_Template.company_code] = _Template;
+        if (_Template.name) {
+            _Index[_Template.name] = _Template;
+            _Index[_Template.name.toUpperCase().replace(/\s+/g, '_')] = _Template;
+        }
     }
-};
+    _Index.SBI = _Canonical_Templates.sbi;
+    _Index.ICICI_LOMBARD = _Canonical_Templates.icici_lombard;
+    _Index.ICICI = _Canonical_Templates.icici_lombard;
+    return Object.freeze(_Index);
+}
+
+const _Company_Templates = _Index_Templates();
+
+function _Get_Template(_Id) {
+    if (!_Id) return null;
+    return _Company_Templates[_Id] || _Company_Templates[String(_Id).trim().toUpperCase().replace(/\s+/g, '_')] || null;
+}
 
 module.exports = {
-    _Company_Templates
+    _Requirement_Mode,
+    _Checkbox_Behavior,
+    _Canonical_Templates,
+    _Company_Templates,
+    _Get_Template,
 };

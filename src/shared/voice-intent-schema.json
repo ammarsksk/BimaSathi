@@ -1,0 +1,207 @@
+{
+  "version": 1,
+  "states": {
+    "WELCOME": {
+      "enabled": false,
+      "mode": "none"
+    },
+    "LANGUAGE_SELECT": {
+      "enabled": true,
+      "mode": "static_actions",
+      "acceptConfidence": 0.72,
+      "actions": [
+        { "key": "LANG_HI", "result": "hi", "description": "choose Hindi" },
+        { "key": "LANG_MR", "result": "mr", "description": "choose Marathi" },
+        { "key": "LANG_TE", "result": "te", "description": "choose Telugu" },
+        { "key": "LANG_TA", "result": "ta", "description": "choose Tamil" },
+        { "key": "LANG_GU", "result": "gu", "description": "choose Gujarati" },
+        { "key": "LANG_KN", "result": "kn", "description": "choose Kannada" },
+        { "key": "LANG_EN", "result": "en", "description": "choose English" }
+      ]
+    },
+    "MAIN_MENU": {
+      "enabled": true,
+      "mode": "static_actions",
+      "acceptConfidence": 0.74,
+      "actions": [
+        { "key": "NEW_CLAIM", "result": "new_claim", "description": "start a new crop insurance claim" },
+        { "key": "STATUS", "result": "status", "description": "view claim status" },
+        { "key": "RESUME", "result": "resume", "description": "resume a saved draft" },
+        { "key": "DELETE_DRAFT", "result": "delete_draft", "description": "delete one draft claim" },
+        { "key": "QUERY", "result": "query", "description": "ask a crop insurance question" },
+        { "key": "PREMIUM", "result": "premium", "description": "calculate premium" },
+        { "key": "HELPER", "result": "helper", "description": "enter helper mode" },
+        { "key": "EXIT_HELPER", "result": "exit_helper", "description": "exit helper mode" },
+        { "key": "LANGUAGE", "result": "language", "description": "change language" }
+      ]
+    },
+    "CLAIM_HUB": {
+      "enabled": true,
+      "mode": "static_actions",
+      "acceptConfidence": 0.76,
+      "actions": [
+        { "key": "FARMER", "result": "farmer", "description": "open farmer details" },
+        { "key": "CROP", "result": "crop", "description": "open crop details" },
+        { "key": "DATE_LOCATION", "result": "date_location", "description": "open date and location" },
+        { "key": "DOCUMENTS", "result": "documents", "description": "open documents section" },
+        { "key": "TEMPLATE", "result": "template", "description": "open insurer form section" },
+        { "key": "MISSING", "result": "missing", "description": "open missing fields section" },
+        { "key": "PHOTOS", "result": "photos", "description": "open photo evidence section" },
+        { "key": "REVIEW", "result": "review", "description": "open review and submit section" },
+        { "key": "SAVE_EXIT", "result": "save_exit", "description": "save and exit this claim" },
+        { "key": "ABANDON", "result": "abandon", "description": "abandon the active claim" }
+      ]
+    },
+    "CLAIM_FARMER_DETAILS": {
+      "enabled": false,
+      "mode": "freeform"
+    },
+    "CLAIM_CROP_DETAILS": {
+      "enabled": true,
+      "mode": "field_choice",
+      "acceptConfidence": 0.72
+    },
+    "CLAIM_DATE_LOCATION": {
+      "enabled": false,
+      "mode": "freeform"
+    },
+    "CLAIM_DOCUMENTS": {
+      "enabled": true,
+      "mode": "static_actions",
+      "acceptConfidence": 0.8,
+      "actions": [
+        { "key": "DONE", "result": "done", "description": "finish the document section" },
+        { "key": "SKIP", "result": "skip", "description": "leave the document section" }
+      ]
+    },
+    "CLAIM_TEMPLATE_SELECT": {
+      "enabled": true,
+      "mode": "static_actions",
+      "acceptConfidence": 0.76,
+      "actions": [
+        { "key": "TEMPLATE_SBI", "result": "sbi", "description": "choose SBI General Insurance claim form" },
+        { "key": "TEMPLATE_ICICI", "result": "icici_lombard", "description": "choose ICICI Lombard claim form" }
+      ]
+    },
+    "CLAIM_MISSING_FIELDS": {
+      "enabled": true,
+      "mode": "field_choice",
+      "acceptConfidence": 0.74
+    },
+    "CLAIM_PHOTOS": {
+      "enabled": true,
+      "mode": "static_actions",
+      "acceptConfidence": 0.82,
+      "actions": [
+        { "key": "DONE", "result": "done", "description": "finish the photo evidence section" }
+      ]
+    },
+    "CLAIM_REVIEW": {
+      "enabled": true,
+      "mode": "static_actions",
+      "acceptConfidence": 0.82,
+      "actions": [
+        { "key": "SUBMIT", "result": "submit", "description": "submit the claim" },
+        { "key": "EDIT", "result": "edit", "description": "return to claim hub for editing" },
+        { "key": "MENU", "result": "menu", "description": "save and open the main menu" }
+      ]
+    },
+    "STATUS_LIST": {
+      "enabled": true,
+      "mode": "dynamic_list",
+      "acceptConfidence": 0.78
+    },
+    "STATUS_DETAIL": {
+      "enabled": true,
+      "mode": "static_actions",
+      "acceptConfidence": 0.78,
+      "actions": [
+        { "key": "BACK", "result": "back", "description": "go back to the claim list" },
+        { "key": "MENU", "result": "menu", "description": "open the main menu" },
+        { "key": "APPEAL", "result": "appeal", "description": "create an appeal for this claim" }
+      ]
+    },
+    "DRAFT_RESUME_LIST": {
+      "enabled": true,
+      "mode": "dynamic_list",
+      "acceptConfidence": 0.78,
+      "staticActions": [
+        { "key": "START_NEW_CLAIM", "result": "start_new_claim", "description": "create a fresh claim draft instead" }
+      ]
+    },
+    "DRAFT_DELETE_LIST": {
+      "enabled": true,
+      "mode": "dynamic_list",
+      "acceptConfidence": 0.82
+    },
+    "DISCARD_CLAIM_CONFIRM": {
+      "enabled": true,
+      "mode": "static_actions",
+      "acceptConfidence": 0.84,
+      "actions": [
+        { "key": "DELETE_DRAFT", "result": "delete", "description": "delete the active draft claim" },
+        { "key": "KEEP_CLAIM", "result": "keep", "description": "keep the active draft claim" }
+      ]
+    },
+    "QUERY_BOT": {
+      "enabled": false,
+      "mode": "freeform"
+    },
+    "PREMIUM_CALCULATOR": {
+      "enabled": false,
+      "mode": "freeform"
+    },
+    "HELPER_PHONE_CAPTURE": {
+      "enabled": false,
+      "mode": "sensitive"
+    },
+    "HELPER_OTP_VERIFY": {
+      "enabled": false,
+      "mode": "sensitive"
+    },
+    "OPERATOR_HANDOFF": {
+      "enabled": true,
+      "mode": "static_actions",
+      "acceptConfidence": 0.82,
+      "actions": [
+        { "key": "BACK", "result": "back", "description": "go back to the previous chatbot screen" },
+        { "key": "MENU", "result": "menu", "description": "open the main menu" }
+      ]
+    },
+    "APPEAL_START": {
+      "enabled": true,
+      "mode": "static_actions",
+      "acceptConfidence": 0.82,
+      "actions": [
+        { "key": "CREATE_APPEAL", "result": "create", "description": "create an appeal" },
+        { "key": "CANCEL", "result": "cancel", "description": "cancel appeal creation" }
+      ]
+    },
+    "ERROR_RECOVERY": {
+      "enabled": false,
+      "mode": "none"
+    }
+  },
+  "fieldChoices": {
+    "crop_type": {
+      "enabled": true,
+      "acceptConfidence": 0.74
+    },
+    "season": {
+      "enabled": true,
+      "acceptConfidence": 0.74
+    },
+    "cause": {
+      "enabled": true,
+      "acceptConfidence": 0.74
+    },
+    "policy_type": {
+      "enabled": true,
+      "acceptConfidence": 0.74
+    },
+    "schema_choice": {
+      "enabled": true,
+      "acceptConfidence": 0.76
+    }
+  }
+}

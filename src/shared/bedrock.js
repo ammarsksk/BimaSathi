@@ -500,10 +500,12 @@ function _Build_Fallback_Appeal(_Claim) {
  * @param {string} _User_Text — what the farmer typed/said
  * @param {Array} _Available_Actions — [{ key, description }]
  * @param {string} _Language — farmer's language code
- * @returns {Object} { action: string, data: string|null }
+ * @param {string} _Extra_Context — optional state-specific context
+ * @returns {Object} { action: string, data: string|null, confidence: number }
  */
-async function _Interpret_Message(_State, _User_Text, _Available_Actions, _Language = 'hi') {
+async function _Interpret_Message(_State, _User_Text, _Available_Actions, _Language = 'hi', _Extra_Context = '') {
     const _Actions_List = _Available_Actions.map(a => `- ${a.key}: ${a.description}`).join('\n');
+    const _Context_Block = _Extra_Context ? `\nAdditional context:\n${_Extra_Context}\n` : '\n';
 
     const _System = `You are BimaSathi's conversation router for Indian crop insurance.
 
@@ -512,6 +514,7 @@ Farmer's language: ${_Language}
 
 Available actions:
 ${_Actions_List}
+${_Context_Block}
 
 The farmer sent a message. Determine which action they want.
 Consider:
@@ -522,20 +525,22 @@ Consider:
 - If providing data, use action DATA_INPUT and extract the data
 
 Return ONLY valid JSON — no markdown, no explanation:
-{"action": "<ACTION_KEY>", "data": "<extracted data or null>"}`;
+{"action": "<ACTION_KEY>", "data": "<extracted data or null>", "confidence": 0.0}`;
 
     try {
         const _Result = await _Invoke_Model(_System, _User_Text, 100);
         // Strip any markdown fencing if present
         const _Clean = _Result.trim().replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
         const _Parsed = JSON.parse(_Clean);
+        const _Confidence = Number(_Parsed.confidence);
         return {
             action: (_Parsed.action || 'UNKNOWN').toUpperCase(),
             data: _Parsed.data || _Parsed.extracted_data || null,
+            confidence: Number.isFinite(_Confidence) ? Math.max(0, Math.min(1, _Confidence)) : 0,
         };
     } catch (_Err) {
         console.error('_Interpret_Message parse error:', _Err.message);
-        return { action: 'UNKNOWN', data: null };
+        return { action: 'UNKNOWN', data: null, confidence: 0 };
     }
 }
 

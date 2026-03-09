@@ -22,16 +22,49 @@ function _Format_Phone(_Phone) {
     return '+' + _Clean; // Fallback
 }
 
+function _Is_WhatsApp_Channel(_Phone_Number) {
+    return /^whatsapp:/i.test(String(_Phone_Number || '').trim());
+}
+
+function _Normalize_From_Number(_Phone_Number) {
+    const _Raw = String(_Phone_Number || '').trim();
+    if (!_Raw) return '';
+    if (_Is_WhatsApp_Channel(_Raw)) {
+        return `whatsapp:${_Format_Phone(_Raw.replace(/^whatsapp:/i, ''))}`;
+    }
+    return _Format_Phone(_Raw);
+}
+
+function _Normalize_To_Number(_Phone_Number, _From_Number) {
+    const _Formatted = _Format_Phone(_Phone_Number);
+    return _Is_WhatsApp_Channel(_From_Number) ? `whatsapp:${_Formatted}` : _Formatted;
+}
+
+async function _Clear_OTP(_Phone_Number) {
+    try {
+        await _DB._Update_User(_Phone_Number, { otp: null, otpExpiry: null });
+    } catch (_Err) {
+        console.error('Failed to clear OTP after send error:', _Err);
+    }
+}
+
+function _Extract_Twilio_Error(_Error_Data) {
+    if (!_Error_Data) return 'Twilio OTP send failed';
+    if (typeof _Error_Data === 'string') return _Error_Data;
+    return _Error_Data.message || _Error_Data.error_message || _Error_Data.detail || 'Twilio OTP send failed';
+}
+
 /**
  * Sends a 4-digit numeric OTP via Twilio Programmable SMS
  */
 async function _Send_OTP(_Phone_Number) {
     const _Account_Sid = process.env.TWILIO_ACCOUNT_SID;
     const _Auth_Token = process.env.TWILIO_AUTH_TOKEN;
-    const _From_Number = process.env.TWILIO_PHONE_NUMBER;
+    const _From_Number = _Normalize_From_Number(process.env.TWILIO_PHONE_NUMBER);
 
     try {
         const _Clean = _Format_Phone(_Phone_Number);
+        const _To_Number = _Normalize_To_Number(_Clean, _From_Number);
 
         // Generate random 6 digit code
         const _Code = Math.floor(100000 + Math.random() * 900000).toString();
@@ -44,9 +77,9 @@ async function _Send_OTP(_Phone_Number) {
         await _DB._Update_User(_Clean, { otp: _Code, otpExpiry: new Date(Date.now() + 10 * 60000).toISOString() });
 
         if (!_Account_Sid || !_Auth_Token || !_From_Number) {
-            console.error('Twilio credentials missing. Skipping REAL SMS send.');
-            console.log(`[MOCK SMS] OTP for ${_Clean}: ${_Code}`);
-            return true;
+            await _Clear_OTP(_Clean);
+            console.error('Twilio credentials missing. OTP was not sent.');
+            return { success: false, error: 'Twilio credentials are missing', channel: null };
         }
 
         const _Message = `Your BimaSathi Dashboard login code is: ${_Code}. Do not share this with anyone.`;
@@ -59,22 +92,35 @@ async function _Send_OTP(_Phone_Number) {
                 'Content-Type': 'application/x-www-form-urlencoded'
             },
             body: new URLSearchParams({
-                To: _Clean,
+                To: _To_Number,
                 From: _From_Number,
                 Body: _Message
             })
         });
 
         if (!_Response.ok) {
-            const _Error_Data = await _Response.json();
+            const _Error_Data = await _Response.json().catch(async () => ({ message: await _Response.text() }));
+            await _Clear_OTP(_Clean);
             console.error('Twilio SMS Failed:', _Error_Data);
-            return false;
+            return {
+                success: false,
+                error: _Extract_Twilio_Error(_Error_Data),
+                channel: _Is_WhatsApp_Channel(_From_Number) ? 'whatsapp' : 'sms',
+            };
         }
 
-        return true;
+        return {
+            success: true,
+            channel: _Is_WhatsApp_Channel(_From_Number) ? 'whatsapp' : 'sms',
+        };
     } catch (_Err) {
+        await _Clear_OTP(_Phone_Number);
         console.error('Error sending SMS:', _Err);
-        return false;
+        return {
+            success: false,
+            error: _Err.message || 'OTP send failed',
+            channel: _Is_WhatsApp_Channel(process.env.TWILIO_PHONE_NUMBER) ? 'whatsapp' : 'sms',
+        };
     }
 }
 
