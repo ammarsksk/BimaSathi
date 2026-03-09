@@ -1,144 +1,180 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Filter, Search, ChevronDown, ArrowUpDown, Eye, Download, Loader2 } from 'lucide-react'
+import { Eye, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
 import api from '../api/client'
+import { useLanguage } from '../context/LanguageContext'
 import './ClaimsQueue.css'
 
 const STATUS_COLORS = {
-    'Draft': 'badge-orange', 'Evidence Pending': 'badge-gold', 'Submitted': 'badge-blue',
-    'Acknowledged': 'badge-blue', 'Under Review': 'badge-gold', 'Survey Scheduled': 'badge-blue',
-    'Approved': 'badge-green', 'Paid': 'badge-green', 'Rejected': 'badge-red', 'Late Risk': 'badge-red',
+    Draft: 'badge-orange',
+    Submitted: 'badge-blue',
+    Approved: 'badge-green',
+    Paid: 'badge-green',
+    Rejected: 'badge-red',
+    'Evidence Pending': 'badge-gold',
+    'Under Review': 'badge-blue',
+    'Survey Scheduled': 'badge-blue',
+    'Appeal Filed': 'badge-blue',
 }
 
-function urgencyToColor(urgency) {
-    if (urgency === 'critical' || urgency === 'overdue') return 'red'
-    if (urgency === 'warning') return 'yellow'
+function urgencyColor(claim) {
+    if (!claim.deadline) return 'green'
+    const diff = new Date(claim.deadline).getTime() - Date.now()
+    if (diff <= 24 * 60 * 60 * 1000) return 'red'
+    if (diff <= 72 * 60 * 60 * 1000) return 'yellow'
     return 'green'
+}
+
+function canDiscardClaim(claim) {
+    return ['Draft', 'Evidence Pending'].includes(claim?.status)
 }
 
 export default function ClaimsQueue() {
     const [claims, setClaims] = useState([])
     const [loading, setLoading] = useState(true)
-    const [statusFilter, setStatusFilter] = useState('All')
+    const [deletingId, setDeletingId] = useState('')
     const [search, setSearch] = useState('')
+    const [status, setStatus] = useState('')
+    const [error, setError] = useState('')
+    const { t, translateValue } = useLanguage()
 
     useEffect(() => {
-        async function load() {
-            const data = await api.safeClaims({ limit: 100 })
-            setClaims(data.claims || [])
+        loadClaims()
+    }, [status])
+
+    async function loadClaims() {
+        setLoading(true)
+        setError('')
+        try {
+            const result = await api.getOperatorClaims({ limit: 200, status })
+            setClaims(result.claims || [])
+        } catch (err) {
+            setError(err.message || 'Failed to load operator claims')
+        } finally {
             setLoading(false)
         }
-        load()
-    }, [])
+    }
 
-    const statuses = ['All', ...new Set(claims.map(c => c.status))]
+    async function handleDiscardClaim(claim) {
+        if (!canDiscardClaim(claim)) return
+        if (!window.confirm(`${t('common.delete_draft')} ${claim.claimId}?`)) {
+            return
+        }
 
-    const filtered = claims
-        .filter(c => statusFilter === 'All' || c.status === statusFilter)
-        .filter(c => {
-            const s = search.toLowerCase()
-            return !s || (c.farmerName || '').toLowerCase().includes(s) || c.claimId.toLowerCase().includes(s) || (c.village || '').toLowerCase().includes(s)
+        setDeletingId(claim.claimId)
+        setError('')
+        try {
+            await api.deleteOperatorClaim(claim.claimId)
+            setClaims((current) => current.filter((item) => item.claimId !== claim.claimId))
+        } catch (err) {
+            setError(err.message || 'Failed to discard draft claim')
+        } finally {
+            setDeletingId('')
+        }
+    }
+
+    const filtered = useMemo(() => {
+        const needle = search.trim().toLowerCase()
+        return claims.filter((claim) => {
+            if (!needle) return true
+            return [claim.claimId, claim.farmerName, claim.phoneNumber, claim.village, claim.cropType]
+                .some((field) => String(field || '').toLowerCase().includes(needle))
         })
+    }, [claims, search])
+
+    const statuses = useMemo(() => ['All', ...new Set(claims.map((claim) => claim.status).filter(Boolean))], [claims])
 
     if (loading) {
         return (
             <div className="dashboard-loading">
                 <Loader2 size={32} className="spin" />
-                <p>Loading claims…</p>
+                <p>{t('claims.loading')}</p>
             </div>
         )
     }
 
     return (
         <div className="claims-page">
-            {/* Filter bar */}
+            {error && <div className="claims-error">{error}</div>}
+
             <div className="claims-filters glass-card">
                 <div className="filter-search">
                     <Search size={16} />
                     <input
                         type="text"
-                        placeholder="Search by name, ID, or village…"
+                        placeholder={t('claims.search_placeholder')}
                         value={search}
-                        onChange={(e) => setSearch(e.target.value)}
+                        onChange={(event) => setSearch(event.target.value)}
                         className="filter-search-input"
                     />
                 </div>
                 <div className="filter-group">
-                    <Filter size={15} />
-                    <select className="select-field" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                        {statuses.map(s => <option key={s} value={s}>{s}</option>)}
+                    <select className="select-field" value={status} onChange={(event) => setStatus(event.target.value === 'All' ? '' : event.target.value)}>
+                        {statuses.map((value) => (
+                            <option key={value} value={value}>
+                                {value === 'All' ? t('claims.all_statuses') : translateValue(value)}
+                            </option>
+                        ))}
                     </select>
                 </div>
-                <span className="filter-count">{filtered.length} claims</span>
+                <button className="btn btn-secondary btn-sm" onClick={loadClaims}>
+                    <RefreshCw size={14} />
+                    {t('common.refresh')}
+                </button>
             </div>
 
-            {/* Table */}
             <div className="claims-table-wrap glass-card">
                 <table className="data-table claims-table">
                     <thead>
                         <tr>
-                            <th style={{ width: 40 }}></th>
-                            <th>Farmer</th>
-                            <th>Claim ID</th>
-                            <th>Village</th>
-                            <th>Crop</th>
-                            <th>Status</th>
-                            <th>Completeness</th>
-                            <th>Deadline</th>
-                            <th style={{ width: 80 }}>Actions</th>
+                            <th />
+                            <th>{t('claims.farmer')}</th>
+                            <th>{t('claims.claim_id')}</th>
+                            <th>{t('claims.village')}</th>
+                            <th>{t('claims.crop')}</th>
+                            <th>{t('claims.status')}</th>
+                            <th>{t('claims.pending')}</th>
+                            <th>{t('claims.deadline')}</th>
+                            <th>{t('claims.actions')}</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {filtered.map((c) => (
-                            <tr key={c.claimId}>
-                                <td>
-                                    <span className={`urgency-dot urgency-${urgencyToColor(c.urgency)}`} />
+                        {filtered.map((claim) => (
+                            <tr key={claim.claimId}>
+                                <td><span className={`urgency-dot urgency-${urgencyColor(claim)}`} /></td>
+                                <td className="td-farmer">
+                                    <strong>{claim.farmerName || t('claims.unknown_farmer')}</strong>
+                                    <div className="td-sub">{claim.phoneNumber || '-'}</div>
                                 </td>
-                                <td className="td-farmer">{c.farmerName || 'Unknown'}</td>
-                                <td className="td-id">{c.claimId}</td>
-                                <td>{c.village || '—'}</td>
-                                <td>{c.cropType || '—'}</td>
-                                <td>
-                                    <span className={`badge ${STATUS_COLORS[c.status] || 'badge-blue'}`}>{c.status}</span>
-                                </td>
-                                <td>
-                                    <div className="td-score">
-                                        <div className="progress-bar" style={{ width: 80 }}>
-                                            <div
-                                                className={`progress-fill ${c.completenessScore >= 80 ? 'high' : c.completenessScore >= 60 ? 'medium' : 'low'}`}
-                                                style={{ width: `${c.completenessScore}%` }}
-                                            />
-                                        </div>
-                                        <span>{c.completenessScore}%</span>
-                                    </div>
-                                </td>
-                                <td className={urgencyToColor(c.urgency) === 'red' ? 'td-deadline-urgent' : ''}>
-                                    {c.deadline ? new Date(c.deadline).toLocaleDateString() : '—'}
-                                </td>
+                                <td className="td-id">{claim.claimId}</td>
+                                <td>{claim.village || '-'}</td>
+                                <td>{claim.cropType ? translateValue(claim.cropType) : '-'}</td>
+                                <td><span className={`badge ${STATUS_COLORS[claim.status] || 'badge-blue'}`}>{translateValue(claim.status)}</span></td>
+                                <td>{Number(claim.pendingFieldsCount || 0)} {t('common.fields')}</td>
+                                <td>{claim.deadline ? new Date(claim.deadline).toLocaleString() : '-'}</td>
                                 <td>
                                     <div className="td-actions">
-                                        <Link to={`/claims/${c.claimId}`} className="action-btn" data-tooltip="View">
+                                        <Link to={`/claims/${claim.claimId}`} className="action-btn" data-tooltip={t('claims.open_workspace')}>
                                             <Eye size={16} />
                                         </Link>
-                                        <button className="action-btn" data-tooltip="Download PDF">
-                                            <Download size={16} />
-                                        </button>
+                                        {canDiscardClaim(claim) ? (
+                                            <button
+                                                type="button"
+                                                className="action-btn action-btn-danger"
+                                                data-tooltip={t('common.delete_draft')}
+                                                onClick={() => handleDiscardClaim(claim)}
+                                                disabled={deletingId === claim.claimId}
+                                            >
+                                                {deletingId === claim.claimId ? <Loader2 size={16} className="spin" /> : <Trash2 size={16} />}
+                                            </button>
+                                        ) : null}
                                     </div>
                                 </td>
                             </tr>
                         ))}
                     </tbody>
                 </table>
-            </div>
-
-            {/* Pagination */}
-            <div className="claims-pagination">
-                <span className="pagination-info">Showing 1–{filtered.length} of {filtered.length}</span>
-                <div className="pagination-buttons">
-                    <button className="btn btn-secondary btn-sm" disabled>Previous</button>
-                    <button className="btn btn-primary btn-sm">1</button>
-                    <button className="btn btn-secondary btn-sm" disabled>Next</button>
-                </div>
+                {filtered.length === 0 && <div className="claims-empty">{t('claims.no_matches')}</div>}
             </div>
         </div>
     )

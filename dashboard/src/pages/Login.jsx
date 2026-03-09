@@ -1,32 +1,42 @@
 import { useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { Phone, ArrowRight, Shield, Loader2 } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { ArrowRight, Loader2, Phone, Shield } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
+import { useLanguage } from '../context/LanguageContext'
+import { getLoginCopy } from '../utils/loginCopy'
 import './Login.css'
 
 export default function Login() {
     const navigate = useNavigate()
     const { sendOtp, verifyOtp } = useAuth()
-    const [step, setStep] = useState('phone') // phone | otp | verifying
+    const { language, languages, setLanguage, t } = useLanguage()
+    const [step, setStep] = useState('phone')
     const [phone, setPhone] = useState('')
     const [otp, setOtp] = useState('')
     const [error, setError] = useState('')
+    const copy = getLoginCopy(language)
 
-    const handleSendOTP = async (e) => {
-        e.preventDefault()
-        if (phone.length < 10) { setError('Enter a valid 10-digit phone number'); return }
+    const handleSendOTP = async (event) => {
+        event.preventDefault()
+        if (phone.length < 10) {
+            setError(copy.phoneError)
+            return
+        }
         setError('')
         try {
             await sendOtp(phone)
             setStep('otp')
         } catch (err) {
-            setError(err.message || 'Failed to send OTP')
+            setError(err.message || copy.sendFailed)
         }
     }
 
-    const handleVerifyOTP = async (e) => {
-        e.preventDefault()
-        if (otp.length < 6) { setError('Enter the 6-digit OTP'); return }
+    const handleVerifyOTP = async (event) => {
+        event.preventDefault()
+        if (otp.length < 6) {
+            setError(copy.otpError)
+            return
+        }
         setError('')
         setStep('verifying')
         try {
@@ -35,7 +45,7 @@ export default function Login() {
                 navigate('/dashboard')
             }
         } catch (err) {
-            setError(err.message || 'Verification failed')
+            setError(err.message || copy.verifyFailed)
             setStep('otp')
         }
     }
@@ -48,20 +58,28 @@ export default function Login() {
             </div>
 
             <div className="login-container">
-                <Link to="/" className="login-back">← Back to Home</Link>
+                <Link to="/" className="login-back">{copy.back}</Link>
+                <div className="login-language">
+                    <span>{t('common.change_language')}</span>
+                    <select className="select-field" value={language} onChange={(event) => setLanguage(event.target.value)}>
+                        {languages.map((item) => (
+                            <option key={item.code} value={item.code}>{item.label}</option>
+                        ))}
+                    </select>
+                </div>
 
                 <div className="login-card glass-card">
                     <div className="login-logo">
-                        <span className="logo-icon">🌾</span>
+                        <span className="logo-icon">BS</span>
                         <span className="logo-text" style={{ fontFamily: 'var(--font-display)', fontSize: '1.4rem', color: 'var(--primary)' }}>BimaSathi</span>
                     </div>
-                    <h1 className="login-title">Operator Login</h1>
-                    <p className="login-desc">Sign in with your registered phone number to access the claims dashboard.</p>
+                    <h1 className="login-title">{copy.title}</h1>
+                    <p className="login-desc">{copy.desc}</p>
 
                     {step === 'phone' && (
                         <form onSubmit={handleSendOTP} className="login-form">
                             <div className="input-group">
-                                <label>Phone Number</label>
+                                <label>{t('fields.phoneNumber')}</label>
                                 <div className="input-with-icon">
                                     <Phone size={18} className="input-icon" />
                                     <input
@@ -69,42 +87,42 @@ export default function Login() {
                                         className="input-field"
                                         placeholder="+91 98765 43210"
                                         value={phone}
-                                        onChange={(e) => setPhone(e.target.value.replace(/[^0-9+]/g, ''))}
+                                        onChange={(event) => setPhone(event.target.value.replace(/[^0-9+]/g, ''))}
                                         autoFocus
                                     />
                                 </div>
                             </div>
                             {error && <p className="login-error">{error}</p>}
                             <button type="submit" className="btn btn-primary btn-lg login-btn">
-                                Send OTP <ArrowRight size={18} />
+                                {copy.sendOtp} <ArrowRight size={18} />
                             </button>
                         </form>
                     )}
 
                     {step === 'otp' && (
                         <form onSubmit={handleVerifyOTP} className="login-form">
-                            <p className="otp-sent">OTP sent to <strong>{phone}</strong></p>
+                            <p className="otp-sent">{copy.otpSent} <strong>{phone}</strong></p>
                             <div className="input-group">
-                                <label>Enter OTP</label>
+                                <label>{copy.enterOtp}</label>
                                 <div className="otp-inputs">
-                                    {[0, 1, 2, 3, 4, 5].map(i => (
+                                    {[0, 1, 2, 3, 4, 5].map((index) => (
                                         <input
-                                            key={i}
+                                            key={index}
                                             type="text"
                                             maxLength={1}
                                             className="otp-box"
-                                            value={otp[i] || ''}
-                                            autoFocus={i === 0}
-                                            onChange={(e) => {
-                                                const v = e.target.value.replace(/[^0-9]/g, '')
-                                                const newOtp = otp.split('')
-                                                newOtp[i] = v
-                                                setOtp(newOtp.join(''))
-                                                if (v && e.target.nextElementSibling) e.target.nextElementSibling.focus()
+                                            value={otp[index] || ''}
+                                            autoFocus={index === 0}
+                                            onChange={(event) => {
+                                                const nextValue = event.target.value.replace(/[^0-9]/g, '')
+                                                const nextOtp = otp.split('')
+                                                nextOtp[index] = nextValue
+                                                setOtp(nextOtp.join(''))
+                                                if (nextValue && event.target.nextElementSibling) event.target.nextElementSibling.focus()
                                             }}
-                                            onKeyDown={(e) => {
-                                                if (e.key === 'Backspace' && !otp[i] && e.target.previousElementSibling) {
-                                                    e.target.previousElementSibling.focus()
+                                            onKeyDown={(event) => {
+                                                if (event.key === 'Backspace' && !otp[index] && event.target.previousElementSibling) {
+                                                    event.target.previousElementSibling.focus()
                                                 }
                                             }}
                                         />
@@ -113,10 +131,10 @@ export default function Login() {
                             </div>
                             {error && <p className="login-error">{error}</p>}
                             <button type="submit" className="btn btn-primary btn-lg login-btn">
-                                <Shield size={18} /> Verify & Login
+                                <Shield size={18} /> {copy.verify}
                             </button>
                             <button type="button" className="login-resend" onClick={() => setStep('phone')}>
-                                Change number / Resend OTP
+                                {copy.resend}
                             </button>
                         </form>
                     )}
@@ -124,13 +142,13 @@ export default function Login() {
                     {step === 'verifying' && (
                         <div className="login-verifying">
                             <Loader2 size={40} className="spin" />
-                            <p>Verifying OTP…</p>
+                            <p>{copy.verifying}</p>
                         </div>
                     )}
 
                     <div className="login-footer">
                         <Shield size={14} />
-                        <span>Secured by AWS Cognito. OTP verified via Twilio.</span>
+                        <span>{copy.footer}</span>
                     </div>
                 </div>
             </div>

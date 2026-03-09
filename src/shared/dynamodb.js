@@ -201,6 +201,7 @@ async function _Create_Claim(_Claim_Data) {
         claimId: _Claim_Data.claimId,
         userId: _Claim_Data.userId,
         phoneNumber: _Claim_Data.phoneNumber,
+        consentPhoneNumber: _Claim_Data.consentPhoneNumber || null,
         farmerName: _Claim_Data.farmerName || null,
         village: _Claim_Data.village || null,
         district: _Claim_Data.district || null,

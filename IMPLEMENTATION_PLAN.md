@@ -22,7 +22,9 @@ The chatbot remains the primary conversational surface. The operator dashboard b
 - Farmer consent is mandatory before operator claim access.
 - Every operator action must be auditable.
 - Dashboard flow should mirror chatbot stages where possible, but use richer UI instead of conversation prompts.
-- No voice input or voice interpretation is needed on the operator side.
+- Dashboard voice support must be additive and must not alter chatbot behavior, chatbot routing, or chatbot session rules.
+- Voice on the dashboard should be limited to operator-side speech-to-text assistance and transcript review. No dashboard-specific voice business rules should fork the claim lifecycle.
+- Do not change dashboard authentication or security architecture unless explicitly requested later.
 
 ## 3. Current Bot Capability Inventory To Bring Into Dashboard
 
@@ -48,6 +50,7 @@ These already exist in the bot/backend and should be surfaced in operator UI ins
 - status tracking
 - appeal generation
 - deadline reminders and stalled-claim re-engagement
+- WhatsApp voice-note speech-to-text pipeline
 
 ### 3.2 Validation and automation
 
@@ -58,6 +61,7 @@ These already exist in the bot/backend and should be surfaced in operator UI ins
 - form schema generation for insurer templates
 - PDF generation
 - audit logging
+- speech-to-text transcription for voice inputs
 
 ### 3.3 Existing dashboard/backend pieces
 
@@ -160,6 +164,7 @@ That means:
 - missing fields completed in dashboard clear the same pending schema entries
 - uploaded documents/photos on dashboard count for chatbot too
 - claim status changes by operator appear in chatbot status tracking
+- operator voice transcripts saved into claim sections must write to the same canonical fields the chatbot uses, after the same validation rules
 
 ### 6.3 Session boundaries
 
@@ -170,8 +175,26 @@ Use:
 - shared claim data
 - shared draft state metadata where meaningful
 - independent dashboard UI state locally in the browser
+- independent operator voice UI state locally in the browser
 
 The dashboard should not depend on chatbot cached prompts.
+
+### 6.4 Voice isolation rules
+
+Dashboard voice support must not:
+
+- write into chatbot conversation sessions
+- emulate chatbot voice-note events
+- depend on WhatsApp webhook payloads
+- change chatbot command parsing
+- change chatbot voice-only AI routing
+
+Dashboard voice support may:
+
+- capture microphone audio in the browser
+- send audio to a dedicated operator transcription endpoint or reuse the existing transcription backend behind an operator API wrapper
+- return transcript suggestions to the operator
+- let the operator confirm, edit, or discard the transcript before claim data is updated
 
 ## 7. Operator Dashboard Information Architecture
 
@@ -217,9 +240,9 @@ This mirrors the bot flow while making editing explicit and structured.
 
 #### Phase 2
 
-- real OTP only
-- role-based access enforcement
-- JWT validation in operator API
+- no authentication/security changes unless explicitly requested
+- keep existing operator login approach as-is
+- keep current auth scope unchanged during dashboard feature buildout
 
 ### 8.2 Farmer lookup and consent
 
@@ -307,6 +330,7 @@ The operator must be able to do every claim-completion task the bot does.
 - support text, number, date, and choice widgets
 - show source of prefilled values
 - allow operator override with audit entry
+- optionally allow operator voice dictation per field, with transcript preview before save
 
 #### Photos section
 
@@ -335,7 +359,58 @@ The operator must be able to do every claim-completion task the bot does.
 - template status
 - submit action
 
-### 8.5 Operator-assisted creation
+### 8.5 Dashboard voice assistance
+
+Voice on the operator dashboard should help the operator fill fields faster, not create a second conversational product.
+
+Add:
+
+- microphone input on relevant data-entry fields
+- a voice capture modal or inline recorder
+- transcript preview before applying changes
+- one-click insert into the active field
+- support for long-form dictated notes in review/timeline/audit commentary where needed
+
+Initial voice-enabled areas:
+
+- farmer name, village, district, state
+- crop type, cause, season
+- exact location text
+- insurer-template missing fields that are free text
+- operator notes / appeal notes
+
+Voice should not directly write without confirmation for:
+
+- Aadhaar number
+- bank account number
+- IFSC
+- phone numbers
+- OTP
+- claim IDs
+- exact numeric/legal identifiers
+
+For these fields:
+
+- transcript may be shown as a suggestion
+- operator must manually confirm or edit before save
+
+### 8.6 Voice transcription UX rules
+
+- transcription must be operator-initiated, never always-on
+- transcript must be visible before applying to a field
+- operator can edit transcript before save
+- low-confidence transcript should show a warning and require confirmation
+- transcript application should still run through the same backend validators as typed input
+- failed transcription must not block the rest of the workspace
+
+### 8.7 Voice data handling
+
+- store only the final accepted text in canonical claim fields
+- store raw transcript and confidence only when needed for audit/debug
+- do not store browser audio blobs permanently unless there is a clear compliance need
+- if audio is retained temporarily, keep retention short and separate from farmer evidence
+
+### 8.8 Operator-assisted creation
 
 Add a new operator flow:
 
@@ -347,7 +422,7 @@ Add a new operator flow:
 
 This is separate from queue review. This is the UI equivalent of chatbot filing.
 
-### 8.6 Status and appeal operations
+### 8.9 Status and appeal operations
 
 Add:
 
@@ -358,7 +433,7 @@ Add:
 - appeal creation button
 - appeal PDF access
 
-### 8.7 Audit and traceability
+### 8.10 Audit and traceability
 
 Every operator change should log:
 
@@ -370,6 +445,8 @@ Every operator change should log:
 - new value
 - source screen
 - timestamp
+- whether the value came from typed entry or voice-assisted transcription
+- transcript confidence if voice assistance was used
 
 Audit log should clearly distinguish:
 
@@ -397,6 +474,7 @@ The current operator API is not enough.
 - `POST /operator/claims/:id/template/select`
 - `POST /operator/claims/:id/template/generate`
 - `POST /operator/claims/:id/appeal`
+- `POST /operator/voice/transcribe`
 
 ### 9.2 Existing API enhancements
 
@@ -408,15 +486,28 @@ Enhance:
 
 to return richer claim workspace data, not just queue summary data.
 
-### 9.3 Auth hardening
+### 9.3 Voice backend shape
 
-Current operator API only checks for an auth header.
+Preferred approach:
 
-Need:
+- keep chatbot voice Lambda unchanged for WhatsApp use
+- add an operator-facing API wrapper for transcription
+- the wrapper accepts browser-uploaded audio and returns transcript + confidence + detected language
+- the wrapper reuses shared transcription logic where possible but stays independent from chatbot event handling
 
-- proper Cognito JWT verification
-- operator role validation
-- scoped farmer-access validation on every claim fetch/edit
+This avoids coupling dashboard voice to:
+
+- WhatsApp media download rules
+- chatbot session flow
+- chatbot voice intent resolution
+
+### 9.4 Auth and security note
+
+Authentication/security changes are out of scope for this implementation plan unless explicitly requested later.
+
+The current dashboard/auth approach should be treated as frozen during this buildout.
+
+If security work is requested later, it should be planned separately.
 
 ## 10. UI/UX Differences From Chatbot
 
@@ -432,8 +523,11 @@ It should improve on it:
 - form readiness indicators
 - timeline and audit context
 - one-click navigation between incomplete sections
+- voice dictation controls on supported fields
+- transcript review/edit UI before applying voice-captured values
 
-No voice.
+No dashboard voice replies.
+No chatbot-style voice routing in the dashboard.
 No free-form conversational ambiguity.
 No chat-style step memory required.
 
@@ -464,6 +558,7 @@ These are likely needed for operator mode:
 - structured claim section completeness metadata
 - richer generated document metadata
 - operator assignment metadata
+- optional voice-transcript audit metadata
 
 Prefer additive fields on existing claim/user/consent records rather than parallel storage.
 
@@ -487,6 +582,7 @@ Prefer additive fields on existing claim/user/consent records rather than parall
 - claim detail
 - documents/photos/audit/timeline
 - no editing yet
+- no voice editing yet
 
 ### Phase 3: Editable assisted filing workspace
 
@@ -494,6 +590,7 @@ Prefer additive fields on existing claim/user/consent records rather than parall
 - complete missing schema fields
 - upload docs/photos
 - identity verification visibility
+- typed editing stable first
 
 ### Phase 4: Insurer forms and submission
 
@@ -502,16 +599,23 @@ Prefer additive fields on existing claim/user/consent records rather than parall
 - PDF generation
 - submission
 
-### Phase 5: Appeals and re-engagement
+### Phase 5: Voice-assisted operator entry
+
+- operator voice transcription endpoint
+- microphone UX on supported fields
+- transcript preview/edit/confirm
+- audit logging for voice-assisted updates
+- no effect on chatbot voice flow
+
+### Phase 6: Appeals and re-engagement
 
 - rejected claim handling
 - appeal creation
 - stalled claim operator interventions
 
-### Phase 6: Hardening
+### Phase 7: Hardening
 
-- JWT enforcement
-- proper access scoping
+- no auth/security hardening unless explicitly requested later
 - audit completeness
 - testing and regression coverage
 
@@ -527,14 +631,19 @@ Prefer additive fields on existing claim/user/consent records rather than parall
 - operator can generate insurer forms
 - operator can submit claims
 - operator can create appeals for rejected claims
+- operator can use voice dictation on supported dashboard fields
+- operator voice transcripts require confirmation before applying on sensitive fields
+- chatbot behavior remains unchanged by dashboard voice support
 - all operator actions are auditable
 
 ## 15. Non-Goals
 
 - replacing the chatbot
 - duplicating claim storage in a dashboard-only system
-- voice input or voice output in operator UI
+- voice output in operator UI
+- reusing dashboard voice as a hidden path to mutate chatbot sessions
 - separate business rules for operator versus chatbot
+- auth/security redesign unless explicitly requested later
 
 ## 16. Immediate Build Order
 
@@ -543,7 +652,8 @@ Prefer additive fields on existing claim/user/consent records rather than parall
 3. Build read-only claim workspace on real claim data
 4. Add edit capability section-by-section
 5. Add insurer form generation controls
-6. Add final submission and appeal handling
+6. Add voice-assisted operator entry on supported fields
+7. Add final submission and appeal handling
 
 ## 17. Implementation Notes
 
@@ -551,3 +661,5 @@ Prefer additive fields on existing claim/user/consent records rather than parall
 - Use the dashboard as a second surface over the same backend objects.
 - Keep operator-only UX improvements in frontend and operator API layers.
 - Keep all claim mutations backend-validated so chatbot and dashboard remain consistent.
+- Keep dashboard voice support behind operator API/frontend layers so chatbot voice behavior remains untouched.
+- Do not change authentication/security behavior unless explicitly requested later.

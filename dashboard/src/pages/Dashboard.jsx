@@ -1,49 +1,37 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import {
-    FileText, Clock, CheckCircle2, AlertTriangle, TrendingUp,
-    ArrowUpRight, ArrowRight, Users, Send, Loader2
-} from 'lucide-react'
+import { ArrowRight, Clock3, FileText, Loader2, ShieldCheck, Users } from 'lucide-react'
 import api from '../api/client'
+import { useLanguage } from '../context/LanguageContext'
 import './Dashboard.css'
 
-function getStatusColor(status) {
-    if (['Approved', 'Paid'].includes(status)) return 'badge-green'
-    if (['Rejected'].includes(status)) return 'badge-red'
-    if (['Draft', 'Late Risk'].includes(status)) return 'badge-orange'
-    return 'badge-blue'
-}
-
-function urgencyToColor(urgency) {
-    if (urgency === 'critical' || urgency === 'overdue') return 'red'
-    if (urgency === 'warning') return 'yellow'
+function urgencyClass(claim) {
+    if (!claim.deadline) return 'green'
+    const diff = new Date(claim.deadline).getTime() - Date.now()
+    if (diff <= 24 * 60 * 60 * 1000) return 'red'
+    if (diff <= 72 * 60 * 60 * 1000) return 'yellow'
     return 'green'
 }
 
-function timeAgo(dateStr) {
-    if (!dateStr) return ''
-    const diff = Date.now() - new Date(dateStr).getTime()
-    const mins = Math.floor(diff / 60000)
-    if (mins < 60) return `${mins} min ago`
-    const hrs = Math.floor(mins / 60)
-    if (hrs < 24) return `${hrs}h ago`
-    return `${Math.floor(hrs / 24)}d ago`
-}
-
 export default function Dashboard() {
-    const [data, setData] = useState(null)
-    const [claims, setClaims] = useState([])
     const [loading, setLoading] = useState(true)
+    const [analytics, setAnalytics] = useState(null)
+    const [access, setAccess] = useState([])
+    const [claims, setClaims] = useState([])
+    const { t, translateValue } = useLanguage()
 
     useEffect(() => {
         async function load() {
-            const [analyticsData, claimsData] = await Promise.all([
-                api.safeAnalytics(),
-                api.safeClaims({ limit: 10 }),
-            ])
-            setData(analyticsData)
-            setClaims(claimsData.claims || [])
-            setLoading(false)
+            setLoading(true)
+            try {
+                const bootstrap = await api.safeDashboardBootstrap()
+                const claimResult = await api.getOperatorClaims({ limit: 8 })
+                setAnalytics(bootstrap.analytics)
+                setAccess(bootstrap.access || [])
+                setClaims(claimResult.claims || [])
+            } finally {
+                setLoading(false)
+            }
         }
         load()
     }, [])
@@ -52,93 +40,73 @@ export default function Dashboard() {
         return (
             <div className="dashboard-loading">
                 <Loader2 size={32} className="spin" />
-                <p>Loading dashboard…</p>
+                <p>{t('common.loading')}</p>
             </div>
         )
     }
 
-    const KPIS = [
-        { label: 'Total Claims', value: String(data?.totalClaims || 0), icon: FileText, color: 'var(--primary)', bg: 'var(--primary-soft)' },
-        { label: 'Pending Submission', value: String(data?.pendingSubmission || 0), icon: Clock, color: 'var(--amber)', bg: 'var(--amber-soft)' },
-        { label: 'Avg Completeness', value: `${data?.avgCompleteness || 0}%`, icon: TrendingUp, color: 'var(--emerald)', bg: 'var(--emerald-soft)' },
-        { label: 'Due in 24 Hours', value: String(data?.due24Hours || 0), icon: AlertTriangle, color: 'var(--red)', bg: 'var(--red-soft)', urgent: true },
+    const pendingAccess = access.filter((item) => item.status !== 'verified')
+    const kpis = [
+        { label: t('dashboard.accessible_farmers'), value: analytics?.accessibleFarmers || 0, icon: Users, color: 'var(--primary)' },
+        { label: t('dashboard.assisted_claims'), value: analytics?.totalClaims || 0, icon: FileText, color: 'var(--emerald)' },
+        { label: t('dashboard.pending_submission'), value: analytics?.pendingSubmission || 0, icon: Clock3, color: 'var(--amber)' },
+        { label: t('dashboard.pending_access'), value: pendingAccess.length, icon: ShieldCheck, color: 'var(--red)' },
     ]
-
-    const recentClaims = claims.slice(0, 5)
-    const urgentClaims = claims.filter(c => c.urgency === 'critical' || c.urgency === 'warning').slice(0, 3)
 
     return (
         <div className="dashboard-page">
-            {/* KPIs */}
             <div className="kpi-grid">
-                {KPIS.map((kpi, i) => (
-                    <div key={i} className={`glass-card kpi-card ${kpi.urgent ? 'kpi-urgent' : ''}`}>
-                        <div className="kpi-icon" style={{ color: kpi.color, background: kpi.bg }}>
-                            <kpi.icon size={22} />
+                {kpis.map((item) => (
+                    <div key={item.label} className="glass-card kpi-card">
+                        <div className="kpi-icon" style={{ color: item.color, background: 'var(--bg-soft)' }}>
+                            <item.icon size={22} />
                         </div>
                         <div className="kpi-info">
-                            <span className="kpi-label">{kpi.label}</span>
-                            <span className="kpi-value">{kpi.value}</span>
+                            <span className="kpi-label">{item.label}</span>
+                            <span className="kpi-value">{item.value}</span>
                         </div>
-                        <ArrowUpRight size={16} className="kpi-arrow" />
                     </div>
                 ))}
             </div>
 
             <div className="dashboard-grid">
-                {/* Recent Activity */}
-                <div className="glass-card dash-card">
+                <section className="glass-card dash-card">
                     <div className="dash-card-header">
-                        <h2>Recent Claims</h2>
-                        <Link to="/claims" className="btn btn-ghost btn-sm">View All <ArrowRight size={14} /></Link>
+                        <h2>{t('dashboard.consent_queue')}</h2>
+                        <Link to="/access" className="btn btn-ghost btn-sm">{t('dashboard.open_access_center')} <ArrowRight size={14} /></Link>
                     </div>
                     <div className="dash-card-body">
-                        {recentClaims.map(c => (
-                            <Link key={c.claimId} to={`/claims/${c.claimId}`} className="activity-row">
-                                <span className={`urgency-dot urgency-${urgencyToColor(c.urgency)}`} />
-                                <div className="activity-info">
-                                    <span className="activity-name">{c.farmerName || 'Unknown Farmer'}</span>
-                                    <span className="activity-action">{c.claimId} · {c.cropType} · {c.village}</span>
-                                </div>
-                                <span className={`badge ${getStatusColor(c.status)}`}>{c.status}</span>
-                                <span className="activity-time">{timeAgo(c.createdAt)}</span>
+                        {pendingAccess.length === 0 ? (
+                            <p className="empty-state">{t('dashboard.no_pending_consent')}</p>
+                        ) : pendingAccess.map((item) => (
+                            <Link key={item.farmerPhone} to="/access" className="activity-row">
+                                <span className="activity-name">{item.farmerName || item.farmerPhone}</span>
+                                <span className="activity-action">{translateValue(item.status)} · {item.requestedAt ? new Date(item.requestedAt).toLocaleString() : 'just now'}</span>
                             </Link>
                         ))}
-                        {recentClaims.length === 0 && <p className="empty-state">No claims yet</p>}
                     </div>
-                </div>
+                </section>
 
-                {/* Urgent Queue */}
-                <div className="glass-card dash-card">
+                <section className="glass-card dash-card">
                     <div className="dash-card-header">
-                        <h2>⚠️ Urgent Queue</h2>
-                        <Link to="/claims" className="btn btn-ghost btn-sm">All Claims <ArrowRight size={14} /></Link>
+                        <h2>{t('dashboard.recent_assisted_claims')}</h2>
+                        <Link to="/claims" className="btn btn-ghost btn-sm">{t('dashboard.open_queue')} <ArrowRight size={14} /></Link>
                     </div>
                     <div className="dash-card-body">
-                        {urgentClaims.map(c => (
-                            <Link key={c.claimId} to={`/claims/${c.claimId}`} className="urgent-row glass-card">
-                                <div className="urgent-top">
-                                    <span className="urgent-id">{c.claimId}</span>
-                                    <span className="urgent-farmer">{c.farmerName}</span>
+                        {claims.length === 0 ? (
+                            <p className="empty-state">{t('dashboard.no_claims')}</p>
+                        ) : claims.map((claim) => (
+                            <Link key={claim.claimId} to={`/claims/${claim.claimId}`} className="activity-row">
+                                <span className={`urgency-dot urgency-${urgencyClass(claim)}`} />
+                                <div className="activity-info">
+                                    <span className="activity-name">{claim.farmerName || claim.claimId}</span>
+                                    <span className="activity-action">{claim.claimId} · {claim.cropType ? translateValue(claim.cropType) : '-'} · {translateValue(claim.status)}</span>
                                 </div>
-                                <div className="urgent-bottom">
-                                    <span className="urgent-crop">{c.cropType}</span>
-                                    <span className="urgent-deadline">{c.deadline ? new Date(c.deadline).toLocaleDateString() : 'N/A'}</span>
-                                    <div className="td-score">
-                                        <div className="progress-bar" style={{ width: 60 }}>
-                                            <div
-                                                className={`progress-fill ${c.completenessScore >= 80 ? 'high' : c.completenessScore >= 60 ? 'medium' : 'low'}`}
-                                                style={{ width: `${c.completenessScore}%` }}
-                                            />
-                                        </div>
-                                        <span>{c.completenessScore}%</span>
-                                    </div>
-                                </div>
+                                <span className="activity-time">{claim.completenessScore}% {t('common.complete')}</span>
                             </Link>
                         ))}
-                        {urgentClaims.length === 0 && <p className="empty-state">No urgent claims 🎉</p>}
                     </div>
-                </div>
+                </section>
             </div>
         </div>
     )

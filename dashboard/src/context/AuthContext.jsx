@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import api from '../api/client'
+import { normalizeOperatorUser } from '../utils/session'
 
 const AuthContext = createContext(null)
 
@@ -20,7 +21,9 @@ export function AuthProvider({ children }) {
         const savedUser = sessionStorage.getItem('bms_user')
         if (token && savedUser) {
             try {
-                setUser(JSON.parse(savedUser))
+                const normalizedUser = normalizeOperatorUser(JSON.parse(savedUser), token)
+                sessionStorage.setItem('bms_user', JSON.stringify(normalizedUser))
+                setUser(normalizedUser)
                 setIsAuthenticated(true)
             } catch { /* ignore corrupt data */ }
         }
@@ -41,7 +44,10 @@ export function AuthProvider({ children }) {
         if (result.tokens?.AccessToken) {
             sessionStorage.setItem('bms_token', result.tokens.AccessToken)
         }
-        const usr = result.user || { phoneNumber, role: 'operator', name: 'Operator' }
+        const usr = normalizeOperatorUser(
+            result.user || { phoneNumber, role: 'operator', name: 'Operator' },
+            result.tokens?.AccessToken || ''
+        )
         sessionStorage.setItem('bms_user', JSON.stringify(usr))
         setUser(usr)
         setIsAuthenticated(true)

@@ -29,6 +29,7 @@ const _LEGACY_STATE_MAP = Object.freeze({
     PREMIUM_CALCULATOR_START: _States.PREMIUM_CALCULATOR,
     COMPANY_SELECT: _States.CLAIM_REVIEW,
     TEMPLATE_FILL: _States.CLAIM_MISSING_FIELDS,
+    operator_workspace: _States.CLAIM_HUB,
     QUERY_BOT: _States.QUERY_BOT,
 });
 
@@ -115,6 +116,8 @@ const _SECTION_FIELDS = Object.freeze({
         { key: 'exact_location', required: true, prompt: 'What is the field location? Reply with the field location, village, or nearest landmark.' },
     ],
 });
+
+const _SECTION_EDIT_PICKER = '__section_edit_picker__';
 
 let _State_Handlers = {};
 
@@ -206,6 +209,7 @@ function _Normalize_Context(_Context = {}, _Phone = '') {
         userId: _Base.userId || null,
         activeClaimId: _Base.activeClaimId || null,
         currentFieldKey: _Base.currentFieldKey || null,
+        sectionEditMode: _Base.sectionEditMode || null,
         selectedStatusClaimId: _Base.selectedStatusClaimId || null,
         premiumFlow: _Base.premiumFlow || null,
         helperVerificationPhone: _Base.helperVerificationPhone || null,
@@ -625,12 +629,30 @@ function _Global_Command(_Text, _Language) {
     if (!_Value) return null;
     const _Match = (..._Words) => _Words.some((_Word) => _Norm(_Word) === _Value);
     const _Contains = (..._Words) => _Words.some((_Word) => _Value.includes(_Norm(_Word)));
+    const _Has_Back = _Contains('go back', 'back', 'return', 'wapas', 'वापस');
+    const _Has_Main_Menu = _Contains(
+        'main menu',
+        'home screen',
+        'home menu',
+        'back to menu',
+        'back to the menu',
+        'go to menu',
+        'go to the menu',
+        'go back to the main menu',
+        'go back to main menu',
+        'return to the main menu',
+        'return to main menu',
+        'take me to the main menu',
+        'take me to main menu',
+        'open the main menu',
+        'open main menu'
+    ) || (_Has_Back && _Contains('menu', 'home'));
 
+    if (_Has_Main_Menu || _Match('main menu', 'home')) return 'main_menu';
     if (_Match('back', 'go back', 'previous', 'wapas', 'return', 'वापस')) return 'back';
     if (_Match('hello', 'hi', 'hey', 'namaste', 'namaskar', 'good morning', 'good afternoon', 'good evening')) return 'greeting';
     if (_Match('repeat', 'again', 'say again', 'dobara')) return 'repeat';
     if (_Match('menu')) return 'menu';
-    if (_Match('main menu', 'home')) return 'main_menu';
     if (_Match('save and exit', 'save exit', 'save', 'save draft')) return 'save_exit';
     if (_Contains('change language', 'switch language', 'bhasha', 'भाषा', 'language')) return 'change_language';
     if (_Match('help', 'support', 'madad', 'operator')) return 'help';
@@ -655,6 +677,7 @@ function _Clear_Claim_Session(_Session) {
             ..._Session.context,
             activeClaimId: null,
             currentFieldKey: null,
+            sectionEditMode: null,
             selectedStatusClaimId: null,
             cachedPrompt: null,
             currentCheckpoint: null,
@@ -1158,14 +1181,31 @@ _State_Handlers = {
         const _Pending = await _Pending_Fields(_Claim);
         if (event.type === 'init' || !event.text) {
             const _Prompt = _Build_Claim_Hub_Prompt(_Claim, _Pending);
-            return { state: _States.CLAIM_HUB, context: { activeClaimId: _Claim.claimId, currentFieldKey: null }, prompt: _Prompt, messages: [_Prompt] };
+            return {
+                state: _States.CLAIM_HUB,
+                context: { activeClaimId: _Claim.claimId, currentFieldKey: null, sectionEditMode: null },
+                prompt: _Prompt,
+                messages: [_Prompt],
+            };
         }
 
         const _Action = await _Resolve_Claim_Hub(event.text, session.language, event, session);
         if (!_Action) return { state: _States.CLAIM_HUB, messages: _With_Current_Prompt(session, 'Choose one of the sections from the claim hub.') };
-        if (_Action === 'farmer') return _Enter_State(session, _States.CLAIM_FARMER_DETAILS, { currentFieldKey: null });
-        if (_Action === 'crop') return _Enter_State(session, _States.CLAIM_CROP_DETAILS, { currentFieldKey: null });
-        if (_Action === 'date_location') return _Enter_State(session, _States.CLAIM_DATE_LOCATION, { currentFieldKey: null });
+        if (_Action === 'farmer') {
+            return _Enter_State(session, _States.CLAIM_FARMER_DETAILS, _Farmer_Done(_Claim)
+                ? { currentFieldKey: _SECTION_EDIT_PICKER, sectionEditMode: _States.CLAIM_FARMER_DETAILS }
+                : { currentFieldKey: null, sectionEditMode: null });
+        }
+        if (_Action === 'crop') {
+            return _Enter_State(session, _States.CLAIM_CROP_DETAILS, _Crop_Done(_Claim)
+                ? { currentFieldKey: _SECTION_EDIT_PICKER, sectionEditMode: _States.CLAIM_CROP_DETAILS }
+                : { currentFieldKey: null, sectionEditMode: null });
+        }
+        if (_Action === 'date_location') {
+            return _Enter_State(session, _States.CLAIM_DATE_LOCATION, _Date_Location_Done(_Claim)
+                ? { currentFieldKey: _SECTION_EDIT_PICKER, sectionEditMode: _States.CLAIM_DATE_LOCATION }
+                : { currentFieldKey: null, sectionEditMode: null });
+        }
         if (_Action === 'documents') {
             if (!_Claim.farmerName) {
                 return { state: _States.CLAIM_HUB, messages: _With_Current_Prompt(session, 'Complete the farmer name first before uploading documents.') };
@@ -1844,11 +1884,54 @@ async function _Resume_Draft(_Session, _Claim) {
 async function _Section_Handler({ session, event }, _State) {
     const _Claim = await _Active_Claim(session);
     if (!_Claim) return _Enter_State(_Clear_Claim_Session(session), _States.MAIN_MENU);
+    const _Is_Edit_Mode = session.context.sectionEditMode === _State;
+    if (_Is_Edit_Mode && session.context.currentFieldKey === _SECTION_EDIT_PICKER) {
+        const _Prompt = _Build_Section_Edit_Prompt(_State, _Claim);
+        if (event.type === 'init' || !event.text) {
+            return {
+                state: _State,
+                context: { currentFieldKey: _SECTION_EDIT_PICKER, sectionEditMode: _State },
+                prompt: _Prompt,
+                messages: [_Prompt],
+            };
+        }
+        const _Value = _Norm(event.text);
+        if (_Value === 'done' || _Value === 'skip') {
+            return _Enter_State(session, _States.CLAIM_HUB, { currentFieldKey: null, sectionEditMode: null });
+        }
+        const _Selected_Field = _Resolve_Section_Edit_Field(_State, event.text);
+        if (!_Selected_Field) {
+            return {
+                state: _State,
+                context: { currentFieldKey: _SECTION_EDIT_PICKER, sectionEditMode: _State },
+                prompt: _Prompt,
+                messages: [{ type: 'text', body: 'Reply with a field number to edit, or type done to go back.' }, _Prompt],
+            };
+        }
+        const _Field_Prompt = _Section_Edit_Field_Prompt(_State, _Selected_Field, _Claim);
+        return {
+            state: _State,
+            context: { currentFieldKey: _Selected_Field.key, sectionEditMode: _State },
+            prompt: _Field_Prompt,
+            messages: [_Field_Prompt],
+        };
+    }
     let _Field = _Section_Field(_State, _Claim, session.context.currentFieldKey);
-    if (!_Field) return _Enter_State(session, _States.CLAIM_HUB, { currentFieldKey: null }, { extraMessages: [{ type: 'text', body: `${_Section_Name(_State)} completed.` }] });
+    if (!_Field) {
+        if (_Is_Edit_Mode) {
+            const _Prompt = _Build_Section_Edit_Prompt(_State, _Claim);
+            return {
+                state: _State,
+                context: { currentFieldKey: _SECTION_EDIT_PICKER, sectionEditMode: _State },
+                prompt: _Prompt,
+                messages: [{ type: 'text', body: `${_Section_Name(_State)} updated. Choose another field to edit, or type done.` }, _Prompt],
+            };
+        }
+        return _Enter_State(session, _States.CLAIM_HUB, { currentFieldKey: null, sectionEditMode: null }, { extraMessages: [{ type: 'text', body: `${_Section_Name(_State)} completed.` }] });
+    }
     if (event.type === 'init' || (!event.text && event.type === 'text')) {
         const _Prompt = _Section_Prompt(_State, _Field);
-        return { state: _State, context: { currentFieldKey: _Field.key }, prompt: _Prompt, messages: [_Prompt] };
+        return { state: _State, context: { currentFieldKey: _Field.key, sectionEditMode: _Is_Edit_Mode ? _State : null }, prompt: _Prompt, messages: [_Prompt] };
     }
     if (_Field.key !== 'exact_location' && event.type !== 'text') {
         return { state: _State, messages: _With_Current_Prompt(session, 'Please reply with text for this step.') };
@@ -1863,11 +1946,11 @@ async function _Section_Handler({ session, event }, _State) {
     if (_Claim.selectedTemplateId || _Claim.company) {
         await _Prepare_Template_Schema(_Claim.claimId, session.context.userId, _Claim.selectedTemplateId || _Claim.company);
     }
-    if (_State === _States.CLAIM_DATE_LOCATION && _Field.key === 'exact_location') {
+    if (!_Is_Edit_Mode && _State === _States.CLAIM_DATE_LOCATION && _Field.key === 'exact_location') {
         return _Enter_State(
-            { ...session, context: { ...session.context, currentFieldKey: null } },
+            { ...session, context: { ...session.context, currentFieldKey: null, sectionEditMode: null } },
             _States.CLAIM_HUB,
-            { currentFieldKey: null },
+            { currentFieldKey: null, sectionEditMode: null },
             { extraMessages: [{ type: 'text', body: 'Date and location completed.' }] }
         );
     }
@@ -1969,11 +2052,74 @@ function _Section_Name(_State) {
     return 'Claim section';
 }
 
+function _Build_Section_Edit_Prompt(_State, _Claim) {
+    const _Fields = _SECTION_FIELDS[_State] || [];
+    return {
+        type: 'text',
+        body: [
+            `${_Section_Name(_State)} is already filled.`,
+            'Reply with the number of the field you want to edit, or type done to go back.',
+            ..._Fields.map((_Field, _Index) => `${_Index + 1}. ${_Section_Field_Label(_Field.key)}: ${_Section_Field_Current_Value(_Claim, _Field.key)}`),
+        ].join('\n'),
+    };
+}
+
+function _Resolve_Section_Edit_Field(_State, _Text) {
+    const _Fields = _SECTION_FIELDS[_State] || [];
+    const _Value = _Norm(_Text);
+    const _Index = Number.parseInt(_Value, 10);
+    if (Number.isInteger(_Index) && _Index >= 1 && _Index <= _Fields.length) return _Fields[_Index - 1];
+    return _Fields.find((_Field) => {
+        const _Label = _Section_Field_Label(_Field.key);
+        return [
+            _Field.key,
+            _Label,
+            _Label.replace(/\s+/g, '_'),
+            _Label.replace(/\s+/g, ''),
+        ].some((_Alias) => _Norm(_Alias) === _Value);
+    }) || null;
+}
+
+function _Section_Edit_Field_Prompt(_State, _Field, _Claim) {
+    const _Base = _Section_Prompt(_State, _Field);
+    const _Current = _Section_Field_Current_Value(_Claim, _Field.key);
+    return { type: 'text', body: `${_Base.body}\nCurrent value: ${_Current}` };
+}
+
 function _Section_Prompt(_State, _Field) {
     const _Fields = _SECTION_FIELDS[_State] || [];
     const _Index = Math.max(_Fields.findIndex((_Item) => _Item.key === _Field.key), 0) + 1;
     const _Prompt = typeof _Field.prompt === 'function' ? _Field.prompt() : _Field.prompt;
     return { type: 'text', body: `${_Section_Name(_State)} step ${_Index} of ${_Fields.length}: ${_Prompt}` };
+}
+
+function _Section_Field_Label(_Key) {
+    switch (_Key) {
+        case 'farmer_name': return 'Farmer name';
+        case 'crop_type': return 'Crop type';
+        case 'area_hectares': return 'Affected area';
+        case 'policy_type': return 'Policy type';
+        case 'loss_date': return 'Loss date';
+        case 'exact_location': return 'Location';
+        default: return _Humanize(_Key);
+    }
+}
+
+function _Section_Field_Current_Value(_Claim, _Key) {
+    switch (_Key) {
+        case 'farmer_name': return _Claim.farmerName || 'Not set';
+        case 'village': return _Claim.village || 'Not set';
+        case 'district': return _Claim.district || 'Not set';
+        case 'state': return _Claim.state || 'Not set';
+        case 'crop_type': return _Claim.cropType || 'Not set';
+        case 'season': return _Claim.season || 'Not set';
+        case 'cause': return _Claim.cause || 'Not set';
+        case 'area_hectares': return _Claim.areaHectares || 'Not set';
+        case 'policy_type': return _Claim.policyType || 'Not set';
+        case 'loss_date': return _Claim.lossDate || 'Not set';
+        case 'exact_location': return _Claim.exactLocation || _Claim.gpsCoords || 'Not set';
+        default: return 'Not set';
+    }
 }
 
 function _Current_Pending(_Pending, _Current) {

@@ -11,7 +11,7 @@ const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { randomUUID: _Generate_UUID } = require('crypto');
 
 const { _Download_Media } = require('../../shared/whatsapp');
-const { _Get_Language_Config } = require('../../shared/languages');
+const { _Get_Language_Config, _Supported_Languages } = require('../../shared/languages');
 const _S3_Helper = require('../../shared/s3');
 
 const _Primary_Region = process.env.AWS_REGION || process.env.AWS_REGION_NAME || 'ap-south-1';
@@ -62,7 +62,11 @@ async function _Process_Voice(_Media_Data, _Language = 'hi', _Claim_Id = null) {
 
         const _Download = await _Download_Media(_Media_Data.id);
         const _Audio_Buffer = _Download.buffer;
-        const _Content_Type = _Download.contentType || '';
+        const _Content_Type = _Download.contentType
+            || _Media_Data?.contentType
+            || _Media_Data?.content_type
+            || _Media_Data?.mime_type
+            || '';
 
         if (!_Audio_Buffer) {
             return _Voice_Result({
@@ -197,8 +201,8 @@ async function _Generate_Audio_Response(_Text, _Language = 'hi', _Claim_Id = nul
 
 
 async function _Await_Transcription_Result(_Job_Id) {
-    for (let _Attempt = 0; _Attempt < 12; _Attempt++) {
-        await _Sleep(2000);
+    for (let _Attempt = 0; _Attempt < 20; _Attempt++) {
+        await _Sleep(1500);
 
         const _Job_Status = await _Transcribe_Client.send(new GetTranscriptionJobCommand({
             TranscriptionJobName: _Job_Id,
@@ -206,9 +210,7 @@ async function _Await_Transcription_Result(_Job_Id) {
 
         const _Status = _Job_Status.TranscriptionJob?.TranscriptionJobStatus;
         if (_Status === 'COMPLETED') {
-            const _Result_Key = `temp/transcriptions/${_Job_Id}.json`;
-            const _Result_Buffer = await _S3_Helper._Get_Object(_Result_Key);
-            const _Result = JSON.parse(_Result_Buffer.toString());
+            const _Result = await _Read_Transcription_Result(_Job_Status.TranscriptionJob, _Job_Id);
             const _Transcript = (_Result.results?.transcripts?.[0]?.transcript || '').trim();
 
             if (_Transcript) {
@@ -244,8 +246,12 @@ function _Resolve_Audio_Format(_Content_Type = '') {
         'audio/ogg': 'ogg',
         'audio/oga': 'ogg',
         'audio/opus': 'ogg',
+        'application/ogg': 'ogg',
         'audio/webm': 'webm',
         'video/webm': 'webm',
+        'audio/x-m4a': 'mp4',
+        'audio/3gpp': 'mp4',
+        'audio/3gp': 'mp4',
         'audio/mpeg': 'mp3',
         'audio/mp3': 'mp3',
         'audio/wav': 'wav',
@@ -269,7 +275,30 @@ function _Build_Language_Attempts(_Language, _Primary_Code) {
     if (_Language !== 'hi') _Push('hi-IN');
     if (_Language !== 'en') _Push('en-IN');
 
-    return _Attempts.slice(0, 3);
+    for (const _Config of Object.values(_Supported_Languages || {})) {
+        _Push(_Config?._Transcribe_Code);
+    }
+
+    return _Attempts.slice(0, 7);
+}
+
+async function _Read_Transcription_Result(_Job, _Job_Id) {
+    const _Transcript_File_Uri = _Job?.Transcript?.TranscriptFileUri;
+    if (_Transcript_File_Uri) {
+        try {
+            const _Response = await fetch(_Transcript_File_Uri);
+            if (_Response.ok) {
+                return await _Response.json();
+            }
+            console.error(`Transcript fetch failed: status=${_Response.status}, job=${_Job_Id}`);
+        } catch (_Error) {
+            console.error(`Transcript fetch failed for ${_Job_Id}:`, _Error.message);
+        }
+    }
+
+    const _Result_Key = `temp/transcriptions/${_Job_Id}.json`;
+    const _Result_Buffer = await _S3_Helper._Get_Object(_Result_Key);
+    return JSON.parse(_Result_Buffer.toString());
 }
 
 function _Voice_Result(_Value = {}) {

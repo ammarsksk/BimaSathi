@@ -7,6 +7,8 @@ const { _Schema_Values_Map } = require('./template-schema');
 const { _Sanitize_PDF_Text, _Wrap_PDF_Text } = require('./pdf-text');
 
 const _FORM_DIR = path.resolve(__dirname, '..', '..', 'assets', 'forms');
+const _PAGE_HEIGHT = 842;
+const _ICICI_COMMON_X = 269.33;
 const _SBI_FIELD_ALIASES = Object.freeze({
     father_name_or_spouse_name: ['father name', 'father\'s name', 'father', 'spouse name'],
     aadhaar_number: ['aadhaar', 'aadhaar number', 'uidai', 'uid'],
@@ -15,7 +17,12 @@ const _SBI_FIELD_ALIASES = Object.freeze({
     bank_branch_location: ['branch', 'branch location', 'branch name'],
     ifsc_code: ['ifsc', 'ifsc code'],
     micr_code: ['micr', 'micr code'],
+    survey_or_khasara_or_udyan_no: ['survey no', 'survey number', 'khasara no', 'khasra no', 'udyan card no', 'survey', 'khasara'],
 });
+
+function _From_Top(_Y) {
+    return _PAGE_HEIGHT - _Y;
+}
 
 const _OVERLAY_MAPS = Object.freeze({
     sbi: {
@@ -48,51 +55,45 @@ const _OVERLAY_MAPS = Object.freeze({
     },
     icici_lombard: {
         text: [
-            { key: 'farmer_name', page: 0, x: 325, y: 676, width: 210, size: 9 },
-            { key: 'father_name_or_spouse_name', page: 0, x: 325, y: 657, width: 210, size: 9 },
-            { key: 'mobile_number', page: 0, x: 325, y: 638, width: 150, size: 9 },
-            { key: 'mailing_address', page: 0, x: 155, y: 620, width: 380, size: 8 },
-            { key: 'mailing_village', page: 0, x: 92, y: 588, width: 100, size: 8 },
-            { key: 'mailing_post_office', page: 0, x: 215, y: 588, width: 95, size: 8 },
-            { key: 'mailing_tehsil', page: 0, x: 340, y: 588, width: 90, size: 8 },
-            { key: 'mailing_district', page: 0, x: 92, y: 570, width: 100, size: 8 },
-            { key: 'mailing_state', page: 0, x: 260, y: 570, width: 90, size: 8 },
-            { key: 'mailing_pin_code', page: 0, x: 430, y: 570, width: 75, size: 8 },
-            { key: 'land_address', page: 0, x: 155, y: 537, width: 380, size: 8 },
-            { key: 'land_village', page: 0, x: 92, y: 507, width: 100, size: 8 },
-            { key: 'land_post_office', page: 0, x: 215, y: 507, width: 95, size: 8 },
-            { key: 'land_tehsil', page: 0, x: 340, y: 507, width: 90, size: 8 },
-            { key: 'land_district', page: 0, x: 92, y: 489, width: 100, size: 8 },
-            { key: 'land_state', page: 0, x: 260, y: 489, width: 90, size: 8 },
-            { key: 'land_pin_code', page: 0, x: 430, y: 489, width: 75, size: 8 },
-            { key: 'email', page: 0, x: 140, y: 470, width: 180, size: 8 },
-            { key: 'scheme_name', page: 0, x: 380, y: 451, width: 90, size: 9 },
-            { key: 'crop_season_year', page: 0, x: 170, y: 432, width: 110, size: 8 },
-            { key: 'crop_name', page: 0, x: 370, y: 432, width: 120, size: 8 },
-            { key: 'sowing_date', page: 0, x: 130, y: 414, width: 90, size: 8 },
-            { key: 'crop_stage', page: 0, x: 285, y: 414, width: 110, size: 8 },
-            { key: 'proposed_harvest_date', page: 0, x: 470, y: 414, width: 70, size: 8 },
-            { key: 'harvesting_date', page: 0, x: 470, y: 395, width: 70, size: 8 },
-            { key: 'insured_area_hectare', page: 0, x: 205, y: 375, width: 75, size: 8 },
-            { key: 'total_land_hectare', page: 0, x: 365, y: 375, width: 70, size: 8 },
-            { key: 'total_land_insured_hectare', page: 0, x: 500, y: 375, width: 40, size: 8 },
-            { key: 'survey_or_khasara_or_udyan_no', page: 0, x: 270, y: 336, width: 260, size: 8 },
-            { key: 'notified_area_name', page: 0, x: 220, y: 317, width: 310, size: 8 },
-            { key: 'sum_insured_rupees', page: 0, x: 155, y: 298, width: 90, size: 8 },
-            { key: 'premium_paid_rupees', page: 0, x: 360, y: 298, width: 90, size: 8 },
-            { key: 'premium_deduction_or_cover_note_date', page: 0, x: 275, y: 278, width: 120, size: 8 },
+            { key: 'farmer_name', page: 0, x: _ICICI_COMMON_X, y: _From_Top(204), width: 210, size: 8.5 },
+            { key: 'father_name_or_spouse_name', page: 0, x: _ICICI_COMMON_X, y: _From_Top(220.66), width: 210, size: 8.5 },
+            { key: 'mobile_number', page: 0, x: _ICICI_COMMON_X, y: _From_Top(233.33), width: 170, size: 8.5 },
+            { key: 'mailing_address', page: 0, x: _ICICI_COMMON_X, y: _From_Top(246.5), width: 220, size: 8.2, lineHeight: 10 },
+            { key: 'mailing_village', page: 0, x: _ICICI_COMMON_X, y: _From_Top(262), width: 180, size: 8.2 },
+            { key: 'mailing_post_office', page: 0, x: _ICICI_COMMON_X, y: _From_Top(275.33), width: 180, size: 8.2 },
+            { key: 'mailing_tehsil', page: 0, x: _ICICI_COMMON_X, y: _From_Top(290), width: 180, size: 8.2 },
+            { key: 'mailing_district', page: 0, x: _ICICI_COMMON_X, y: _From_Top(306), width: 180, size: 8.2 },
+            { key: 'mailing_state', page: 0, x: _ICICI_COMMON_X, y: _From_Top(319), width: 180, size: 8.2 },
+            { key: 'mailing_pin_code', page: 0, x: _ICICI_COMMON_X, y: _From_Top(332), width: 120, size: 8.2 },
+            { key: 'land_address', page: 0, x: _ICICI_COMMON_X, y: _From_Top(347.5), width: 220, size: 8.2, lineHeight: 10 },
+            { key: 'land_village', page: 0, x: _ICICI_COMMON_X, y: _From_Top(363), width: 180, size: 8.2 },
+            { key: 'land_post_office', page: 0, x: _ICICI_COMMON_X, y: _From_Top(378), width: 180, size: 8.2 },
+            { key: 'land_tehsil', page: 0, x: _ICICI_COMMON_X, y: _From_Top(391), width: 180, size: 8.2 },
+            { key: 'land_district', page: 0, x: _ICICI_COMMON_X, y: _From_Top(404), width: 180, size: 8.2 },
+            { key: 'land_state', page: 0, x: _ICICI_COMMON_X, y: _From_Top(418), width: 180, size: 8.2 },
+            { key: 'land_pin_code', page: 0, x: _ICICI_COMMON_X, y: _From_Top(435), width: 120, size: 8.2 },
+            { key: 'email', page: 0, x: _ICICI_COMMON_X, y: _From_Top(448), width: 180, size: 8.2 },
+            { key: 'social_category', page: 0, x: _ICICI_COMMON_X, y: _From_Top(464), width: 120, size: 8.2 },
+            { key: 'gender', page: 0, x: _ICICI_COMMON_X, y: _From_Top(477), width: 60, size: 8.2 },
+            { key: 'crop_season_year', page: 0, x: _ICICI_COMMON_X, y: _From_Top(536), width: 170, size: 8.2 },
+            { key: 'crop_name', page: 0, x: _ICICI_COMMON_X, y: _From_Top(548), width: 170, size: 8.2 },
+            { key: 'sowing_date', page: 0, x: _ICICI_COMMON_X, y: _From_Top(563), width: 120, size: 8.2 },
+            { key: 'crop_stage', page: 0, x: _ICICI_COMMON_X, y: _From_Top(574), width: 170, size: 8.2 },
+            { key: 'proposed_harvest_date', page: 0, x: _ICICI_COMMON_X, y: _From_Top(585), width: 130, size: 8.2 },
+            { key: 'harvesting_date', page: 0, x: _ICICI_COMMON_X, y: _From_Top(600), width: 130, size: 8.2 },
+            { key: 'insured_area_hectare', page: 0, x: _ICICI_COMMON_X, y: _From_Top(613), width: 120, size: 8.2 },
+            { key: 'total_land_hectare', page: 0, x: _ICICI_COMMON_X, y: _From_Top(625), width: 120, size: 8.2 },
+            { key: 'total_land_insured_hectare', page: 0, x: _ICICI_COMMON_X, y: _From_Top(638), width: 120, size: 8.2 },
+            { key: 'loanee_status', page: 0, x: _ICICI_COMMON_X, y: _From_Top(652), width: 130, size: 8.2 },
+            { key: 'survey_or_khasara_or_udyan_no', page: 0, x: _ICICI_COMMON_X, y: _From_Top(663), width: 220, size: 8.2 },
+            { key: 'notified_area_name', page: 0, x: _ICICI_COMMON_X, y: _From_Top(677), width: 220, size: 8.2 },
+            { key: 'sum_insured_rupees', page: 0, x: _ICICI_COMMON_X, y: _From_Top(690), width: 140, size: 8.2 },
+            { key: 'premium_paid_rupees', page: 0, x: _ICICI_COMMON_X, y: _From_Top(703), width: 140, size: 8.2 },
+            { key: 'premium_deduction_or_cover_note_date', page: 0, x: _ICICI_COMMON_X, y: _From_Top(726), width: 180, size: 8.2 },
             { key: 'pep_details', page: 1, x: 95, y: 690, width: 430, size: 8 },
         ],
         checkboxes: [
-            { key: 'social_category', value: 'SC', page: 0, x: 128, y: 451 },
-            { key: 'social_category', value: 'ST', page: 0, x: 162, y: 451 },
-            { key: 'social_category', value: 'GEN', page: 0, x: 205, y: 451 },
-            { key: 'social_category', value: 'OTHER', page: 0, x: 255, y: 451 },
-            { key: 'gender', value: 'M', page: 0, x: 310, y: 451 },
-            { key: 'gender', value: 'F', page: 0, x: 345, y: 451 },
-            { key: 'loanee_status', value: 'loanee', page: 0, x: 305, y: 356 },
-            { key: 'loanee_status', value: 'non_loanee', page: 0, x: 385, y: 356 },
-            { key: 'pep_declaration', value: 'yes', page: 1, x: 90, y: 720 },
+            { key: 'pep_declaration', value: 'yes', page: 1, x: 90, y: 724 },
         ],
     },
 });
@@ -206,6 +207,9 @@ function _Collect_Values(_Template, _Claim_Data) {
 
     if (_Template.id === 'sbi') {
         _Normalize_SBI_Values(_Values, _Claim_Data, _Schema_Values);
+    }
+    if (_Template.id === 'icici_lombard') {
+        _Normalize_ICICI_Values(_Values, _Claim_Data, _Schema_Values);
     }
 
     Object.assign(_Values, _Derived_Checkbox_Values(_Template.id, _Claim_Data, _Values));
@@ -353,6 +357,78 @@ function _Normalize_SBI_Values(_Values, _Claim_Data, _Schema_Values) {
     ], _Looks_Like_Location_Text);
 }
 
+function _Normalize_ICICI_Values(_Values, _Claim_Data, _Schema_Values) {
+    const _Docs = _Claim_Data.documentsReceived || [];
+    const _Identity = _Claim_Data.identityVerification || {};
+
+    _Values.farmer_name = _First_Valid([
+        _Identity.verified ? (_Identity.extractedName || _Identity.claimedName) : null,
+        _Claim_Data.farmerName,
+        _Schema_Values.farmer_name,
+    ], _Looks_Like_Name);
+
+    _Values.father_name_or_spouse_name = _First_Valid([
+        _Schema_Values.father_name_or_spouse_name,
+        _Document_Field_Value(_Docs, 'father_name_or_spouse_name'),
+    ], _Looks_Like_Name);
+
+    _Values.mobile_number = _First_Valid([
+        _Claim_Data.phoneNumber,
+        _Schema_Values.mobile_number,
+        _Schema_Values.phone_number,
+    ], _Looks_Like_Phone);
+
+    _Values.mailing_address = _First_Valid([
+        _Claim_Data.address,
+        _Schema_Values.mailing_address,
+    ], _Looks_Like_Address);
+    _Values.mailing_village = _First_Valid([_Claim_Data.village, _Schema_Values.mailing_village], _Looks_Like_Location_Text);
+    _Values.mailing_post_office = _First_Valid([_Claim_Data.postOffice, _Schema_Values.mailing_post_office], _Looks_Like_Location_Text);
+    _Values.mailing_tehsil = _First_Valid([_Claim_Data.tehsil, _Schema_Values.mailing_tehsil], _Looks_Like_Location_Text);
+    _Values.mailing_district = _First_Valid([_Claim_Data.district, _Schema_Values.mailing_district], _Looks_Like_Location_Text);
+    _Values.mailing_state = _First_Valid([_Claim_Data.state, _Schema_Values.mailing_state], _Looks_Like_Location_Text);
+    _Values.mailing_pin_code = _First_Valid([_Claim_Data.pinCode, _Schema_Values.mailing_pin_code], (_Value) => String(_Value || '').replace(/[^\d]/g, '').length === 6);
+
+    _Values.land_address = _First_Valid([
+        _Claim_Data.landAddress,
+        _Claim_Data.exactLocation,
+        _Schema_Values.land_address,
+    ], _Looks_Like_Address);
+    _Values.land_village = _First_Valid([_Claim_Data.landVillage, _Claim_Data.village, _Schema_Values.land_village], _Looks_Like_Location_Text);
+    _Values.land_post_office = _First_Valid([_Claim_Data.landPostOffice, _Claim_Data.postOffice, _Schema_Values.land_post_office], _Looks_Like_Location_Text);
+    _Values.land_tehsil = _First_Valid([_Claim_Data.landTehsil, _Claim_Data.tehsil, _Schema_Values.land_tehsil], _Looks_Like_Location_Text);
+    _Values.land_district = _First_Valid([_Claim_Data.landDistrict, _Claim_Data.district, _Schema_Values.land_district], _Looks_Like_Location_Text);
+    _Values.land_state = _First_Valid([_Claim_Data.landState, _Claim_Data.state, _Schema_Values.land_state], _Looks_Like_Location_Text);
+    _Values.land_pin_code = _First_Valid([_Claim_Data.landPinCode, _Claim_Data.pinCode, _Schema_Values.land_pin_code], (_Value) => String(_Value || '').replace(/[^\d]/g, '').length === 6);
+
+    _Values.email = _First_Valid([_Claim_Data.email, _Schema_Values.email], (_Value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(_Value || '').trim()));
+    _Values.social_category = _Format_ICICI_Category(_First_Valid([_Claim_Data.socialCategory, _Schema_Values.social_category], Boolean));
+    _Values.gender = _Format_ICICI_Gender(_First_Valid([_Claim_Data.gender, _Schema_Values.gender], Boolean));
+    _Values.crop_season_year = _First_Valid([_Claim_Data.cropSeasonYear, _Claim_Data.season, _Schema_Values.crop_season_year], _Looks_Like_Crop_Name);
+    _Values.crop_name = _First_Valid([_Claim_Data.cropType, _Schema_Values.crop_name], _Looks_Like_Crop_Name);
+    _Values.sowing_date = _First_Valid([_Claim_Data.sowingDate, _Schema_Values.sowing_date], _Looks_Like_ISO_Date);
+    _Values.crop_stage = _First_Valid([_Claim_Data.cropStage, _Schema_Values.crop_stage], _Looks_Like_Crop_Name);
+    _Values.proposed_harvest_date = _First_Valid([_Claim_Data.proposedHarvestDate, _Schema_Values.proposed_harvest_date], _Looks_Like_ISO_Date);
+    _Values.harvesting_date = _First_Valid([_Claim_Data.harvestingDate, _Schema_Values.harvesting_date], _Looks_Like_ISO_Date);
+    _Values.insured_area_hectare = _First_Valid([_Claim_Data.areaHectares, _Schema_Values.insured_area_hectare], (_Value) => Number(_Value) > 0);
+    _Values.total_land_hectare = _First_Valid([_Claim_Data.totalLandHectares, _Schema_Values.total_land_hectare], (_Value) => Number(_Value) > 0);
+    _Values.total_land_insured_hectare = _First_Valid([_Claim_Data.totalLandInsuredHectares, _Schema_Values.total_land_insured_hectare], (_Value) => Number(_Value) > 0);
+    _Values.loanee_status = _Format_ICICI_Loanee(_First_Valid([_Claim_Data.loaneeStatus, _Schema_Values.loanee_status], Boolean));
+    _Values.survey_or_khasara_or_udyan_no = _First_Valid([
+        _Claim_Data.surveyOrKhasaraOrUdyanNo,
+        _Schema_Values.survey_or_khasara_or_udyan_no,
+        _Document_Field_Value(_Docs, 'survey_or_khasara_or_udyan_no'),
+    ], _Looks_Like_Location_Text);
+    _Values.notified_area_name = _First_Valid([_Claim_Data.notifiedAreaName, _Schema_Values.notified_area_name], _Looks_Like_Location_Text);
+    _Values.sum_insured_rupees = _First_Valid([_Claim_Data.sumInsuredRupees, _Schema_Values.sum_insured_rupees], (_Value) => Number(_Value) > 0);
+    _Values.premium_paid_rupees = _First_Valid([_Claim_Data.premiumPaidRupees, _Schema_Values.premium_paid_rupees], (_Value) => Number(_Value) > 0);
+    _Values.premium_deduction_or_cover_note_date = _First_Valid([
+        _Claim_Data.premiumDeductionOrCoverNoteDate,
+        _Schema_Values.premium_deduction_or_cover_note_date,
+    ], _Looks_Like_ISO_Date);
+    _Values.pep_declaration = _First_Valid([_Claim_Data.pepDeclaration, _Schema_Values.pep_declaration], (_Value) => ['yes', 'no'].includes(String(_Value || '').toLowerCase().trim()));
+}
+
 function _Derived_Checkbox_Values(_Template_Id, _Claim_Data, _Values) {
     const _Cause = String(_Values.loss_event_summary || _Claim_Data.cause || '').toLowerCase();
     const _Out = {};
@@ -424,6 +500,28 @@ function _Format_SBI_Gender(_Value) {
     const _Normalized = String(_Value || '').toUpperCase().trim();
     if (_Normalized === 'M') return 'M';
     if (_Normalized === 'F') return 'F';
+    return _Value || '';
+}
+
+function _Format_ICICI_Category(_Value) {
+    const _Normalized = String(_Value || '').toUpperCase().trim();
+    if (['SC', 'ST', 'GEN', 'OTHER'].includes(_Normalized)) return _Normalized;
+    if (['OTHERS', 'OBC'].includes(_Normalized)) return 'OTHER';
+    return _Value || '';
+}
+
+function _Format_ICICI_Gender(_Value) {
+    const _Normalized = String(_Value || '').toUpperCase().trim();
+    if (_Normalized === 'MALE') return 'M';
+    if (_Normalized === 'FEMALE') return 'F';
+    if (['M', 'F'].includes(_Normalized)) return _Normalized;
+    return _Value || '';
+}
+
+function _Format_ICICI_Loanee(_Value) {
+    const _Normalized = String(_Value || '').toLowerCase().trim();
+    if (_Normalized === 'loanee') return 'Loanee';
+    if (_Normalized === 'non_loanee') return 'Non-Loanee';
     return _Value || '';
 }
 

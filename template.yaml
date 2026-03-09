@@ -89,8 +89,8 @@ Resources:
       StageName: prod
       Cors:
         AllowOrigin: "'*'"
-        AllowHeaders: "'Content-Type,Authorization'"
-        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,X-Operator-Phone,X-Operator-Name,X-Operator-Role'"
+        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
 
   # ═══════════════════════════════════════
   # LAMBDA FUNCTIONS
@@ -397,7 +397,27 @@ Resources:
     Properties:
       FunctionName: bimasathi-operator-api
       Handler: src/lambdas/operator-api/index.handler
+      Environment:
+        Variables:
+          META_ACCESS_TOKEN: !Ref MetaAccessToken
+          META_PHONE_NUMBER_ID: !Ref MetaPhoneNumberId
+          META_VERIFY_TOKEN: !Ref MetaVerifyToken
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          TWILIO_PHONE_NUMBER: !Ref TwilioPhoneNumber
       Events:
+        OperatorRoot:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /operator
+            Method: any
+        OperatorProxy:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /operator/{proxy+}
+            Method: any
         ListClaims:
           Type: Api
           Properties:
@@ -437,8 +457,20 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref UsersTable }
         - DynamoDBCrudPolicy: { TableName: !Ref ClaimsTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref ConsentTable }
+        - DynamoDBCrudPolicy: { TableName: !Ref DeadlinesTable }
         - DynamoDBCrudPolicy: { TableName: !Ref AuditLogTable }
         - S3CrudPolicy: { BucketName: !Ref EvidenceBucket }
+        - Statement:
+            - Effect: Allow
+              Action: ['bedrock:InvokeModel', 'bedrock:Converse']
+              Resource: '*'
+            - Effect: Allow
+              Action: ['textract:DetectDocumentText', 'textract:AnalyzeDocument']
+              Resource: '*'
+            - Effect: Allow
+              Action: ['rekognition:DetectLabels', 'rekognition:DetectModerationLabels']
+              Resource: '*'
 
   # ═══════════════════════════════════════
   # DYNAMODB TABLES

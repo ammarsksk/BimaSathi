@@ -75,6 +75,20 @@
     color: var(--primary);
 }
 
+.login-language {
+    display: grid;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.login-language span {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
 /* ── Card ── */
 .login-card {
     padding: 40px 32px;
@@ -88,7 +102,16 @@
 }
 
 .logo-icon {
-    font-size: 1.5rem;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: var(--primary-soft);
+    color: var(--primary);
+    font-size: 0.82rem;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .login-title {

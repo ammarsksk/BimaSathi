@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import {
     MessageCircle, Shield, Clock, Camera, FileText,
-    ArrowRight, Play, CheckCircle2, Award, Menu, X, Mic,
+    ArrowRight, Play, CheckCircle2, Award, Menu, X,
     Bot, Database, Cloud, Cpu, Eye, Volume2, Workflow, Lock,
     Layers, Globe, Zap, ChevronDown, Check
 } from 'lucide-react'
@@ -107,7 +107,7 @@ function WhatsAppDemo() {
             </div>
             <div className="wa-input-bar">
                 <div className="wa-input-fake">Type a message</div>
-                <div className="wa-mic-btn"><Mic size={18} /></div>
+                <div className="wa-mic-btn"><MessageCircle size={18} /></div>
             </div>
         </div>
     )
@@ -118,14 +118,14 @@ function WhatsAppDemo() {
    ═══════════════════════════════════════ */
 
 const FLOW_NODES = [
-    { id: 'farmer', label: 'Farmer', sub: 'WhatsApp + Voice', icon: '👨‍🌾', col: 0, row: 0, color: '#25D366' },
+    { id: 'farmer', label: 'Farmer', sub: 'WhatsApp', icon: '👨‍🌾', col: 0, row: 0, color: '#25D366' },
     { id: 'twilio', label: 'Twilio', sub: 'WhatsApp API', col: 1, row: 0, color: '#F22F46' },
     { id: 'apigw', label: 'API Gateway', sub: 'REST + WebSocket', col: 2, row: 0, color: '#FF9900' },
     { id: 'lambda', label: 'Lambda', sub: '10 Functions', col: 3, row: 0, color: '#FF9900' },
     { id: 'bedrock', label: 'Bedrock', sub: 'Claude 3 Sonnet', col: 1, row: 1, color: '#7C3AED' },
     { id: 'rekognition', label: 'Rekognition', sub: 'Damage Detection', col: 2, row: 1, color: '#2563EB' },
     { id: 'transcribe', label: 'Transcribe', sub: '6 Languages', col: 3, row: 1, color: '#06B6D4' },
-    { id: 'polly', label: 'Polly', sub: 'Voice Replies', col: 4, row: 1, color: '#10B981' },
+    { id: 'polly', label: 'Polly', sub: 'Response Engine', col: 4, row: 1, color: '#10B981' },
     { id: 'stepfn', label: 'Step Functions', sub: 'Orchestration', col: 0, row: 2, color: '#EC4899' },
     { id: 'dynamo', label: 'DynamoDB', sub: '6 Tables', col: 2, row: 2, color: '#2563EB' },
     { id: 's3', label: 'S3 + KMS', sub: 'Encrypted Storage', col: 4, row: 2, color: '#EF4444' },
@@ -225,7 +225,7 @@ function ArchFlowchart() {
 
 const FEATURES = [
     { icon: MessageCircle, title: 'WhatsApp Native', desc: 'No app install needed. Works on any phone with WhatsApp — farmers message, we handle everything.', color: '#25D366', span: true },
-    { icon: Mic, title: 'Voice-First AI', desc: 'Send a voice note in Hindi, Marathi, or 4 other languages. Our AI understands and responds naturally.', color: '#2563EB', span: true },
+    { icon: Bot, title: 'Guided Claim Intake', desc: 'Step-by-step prompts collect the right claim details on WhatsApp without making farmers learn a new workflow.', color: '#2563EB', span: true },
     { icon: Camera, title: 'Smart Evidence', desc: 'Rekognition verifies crop damage, validates GPS, and checks timestamps automatically.', color: '#F59E0B' },
     { icon: FileText, title: 'Auto Docs', desc: 'Claim Form + Evidence Report + Cover Letter generated as PDFs in under 60 seconds.', color: '#7C3AED' },
     { icon: Clock, title: 'Deadline Guardian', desc: 'Reminders at 48h, 24h, 6h, and 1h. Farmers never miss the 72-hour PMFBY window.', color: '#EF4444' },
@@ -250,7 +250,7 @@ const COMPARISONS = [
     { name: 'PMFBY Portal', effort: 'High', success: 'Low', channel: 'Web', highlight: false },
     { name: 'Advisory Apps', effort: 'Medium', success: 'Medium', channel: 'Mobile App', highlight: false },
     { name: 'Insurance Agent', effort: 'Low', success: 'Medium', channel: 'In-person', highlight: false },
-    { name: 'BimaSathi', effort: 'Low', success: 'High', channel: 'WhatsApp + Voice', highlight: true },
+    { name: 'BimaSathi', effort: 'Low', success: 'High', channel: 'WhatsApp', highlight: true },
 ]
 
 /* ═══════════════════════════════════════
@@ -305,14 +305,14 @@ export default function Landing() {
                         </h1>
                         <p className="hero-subtitle reveal">
                             BimaSathi automates the entire claim journey on WhatsApp — from loss reporting
-                            to insurer submission — in under 15 minutes, entirely by voice.
+                            to insurer submission — in under 15 minutes with guided claim intake.
                         </p>
                         <div className="hero-cta reveal">
                             <a href="#how-it-works" className="btn btn-primary btn-lg"><Play size={16} /> See How It Works</a>
                             <Link to="/dashboard" className="btn btn-secondary btn-lg">Open Dashboard <ArrowRight size={16} /></Link>
                         </div>
                         <div className="hero-proof reveal">
-                            {['No app download required', 'Voice-first — no literacy needed', 'PMFBY-compliant claim packs'].map((t, i) => (
+                            {['No app download required', 'Step-by-step guided filing', 'PMFBY-compliant claim packs'].map((t, i) => (
                                 <span key={i} className="hero-proof-item"><Check size={14} /> {t}</span>
                             ))}
                         </div>
@@ -418,8 +418,8 @@ export default function Landing() {
                     <div className="personas-grid stagger-children">
                         {[
                             {
-                                emoji: '👨‍🌾', role: 'Farmer', channel: 'WhatsApp + Voice', desc: 'Files claims entirely via voice notes and photos on WhatsApp. Zero literacy barriers.',
-                                features: ['Voice claim filing in 6 languages', 'AI-guided photo capture', 'Automatic deadline reminders', 'Real-time status updates']
+                                emoji: '👨‍🌾', role: 'Farmer', channel: 'WhatsApp', desc: 'Files claims through guided chat and photos on WhatsApp. Zero literacy barriers.',
+                                features: ['Guided claim filing', 'AI-guided photo capture', 'Automatic deadline reminders', 'Real-time status updates']
                             },
                             {
                                 emoji: '🤝', role: 'Helper', channel: 'WhatsApp', desc: 'A family member or CSC volunteer who files claims on behalf of farmers via OTP consent.',
@@ -504,7 +504,7 @@ export default function Landing() {
                 <div className="container footer-inner">
                     <div className="footer-left">
                         <div className="footer-brand"><span>🌾</span><span className="footer-brand-text">BimaSathi</span></div>
-                        <p className="footer-tagline">Instant, voice-first, trusted by design.</p>
+                        <p className="footer-tagline">Instant, guided, trusted by design.</p>
                         <p className="footer-copy">© 2025 Team Rayquaza EX · AWS AI for Bharat Hackathon</p>
                     </div>
                     <div className="footer-links-grid">

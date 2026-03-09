@@ -40,6 +40,15 @@ const _DOC_KEY_ALIASES = Object.freeze({
     premium_deduction_or_cover_note_date: ['premium date', 'date of premium', 'cover note date'],
 });
 
+const _POSITIVE_NUMBER_FIELDS = new Set([
+    'insured_area_hectare',
+    'area_hectares',
+    'total_land_hectare',
+    'total_land_insured_hectare',
+    'sum_insured_rupees',
+    'premium_paid_rupees',
+]);
+
 function _Normalize(_Value) {
     return String(_Value || '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
@@ -159,7 +168,17 @@ function _Prefill_Value(_Field_Key, _Claim, _Accepted) {
 
 function _Existing_Schema_Value(_Field_Key, _Form_Schema) {
     const _Field = (_Form_Schema || []).find((_Item) => _Item?.field_name === _Field_Key && _Item.status !== _Field_Status.PENDING && _Item.value != null);
+    if (!_Should_Preserve_Existing_Schema_Value(_Field)) return null;
     return _Field?.value ?? null;
+}
+
+function _Should_Preserve_Existing_Schema_Value(_Field) {
+    if (!_Field) return false;
+    if (_Field.status === _Field_Status.PREFILLED) {
+        const _Source = _Normalize(_Field.source);
+        return Boolean(_Source) && _Source !== 'template_prefill';
+    }
+    return true;
 }
 
 function _Claim_Field_Value(_Field_Key, _Claim) {
@@ -195,6 +214,7 @@ function _Claim_Field_Value(_Field_Key, _Claim) {
         total_land_hectare: _Claim.totalLandHectares,
         total_land_insured_hectare: _Claim.totalLandInsuredHectares,
         loanee_status: _Claim.loaneeStatus,
+        survey_or_khasara_or_udyan_no: _Claim.surveyOrKhasaraOrUdyanNo,
         notified_area_name: _Claim.notifiedAreaName,
         sum_insured_rupees: _Claim.sumInsuredRupees,
         premium_paid_rupees: _Claim.premiumPaidRupees,
@@ -244,9 +264,112 @@ function _Schema_Values_Map(_Claim = {}) {
     return _Map;
 }
 
+function _Build_Template_Field_State(_Template_Id, _Claim = {}, _Options = {}) {
+    const _Template = _Get_Template(_Template_Id);
+    if (!_Template) {
+        return {
+            template: null,
+            schema: [],
+            requiredFields: [],
+            missingFields: [],
+            reviewFields: [],
+            pendingFields: [],
+        };
+    }
+
+    const _Schema = _Build_Template_Schema(_Template.id, _Claim);
+    const _Required_Keys = new Set(
+        (_Template.required_for_generation || []).length
+            ? _Template.required_for_generation
+            : _Schema.filter((_Field) => _Field.is_required).map((_Field) => _Field.field_name)
+    );
+    const _Required_Fields = _Schema.filter((_Field) => _Required_Keys.has(_Field.field_name));
+    const _Missing_Fields = _Required_Fields.filter((_Field) => !_Schema_Field_Has_Usable_Value(_Field));
+    const _Review_Auto_Prefilled = _Options.reviewAutoPrefilled === true;
+    const _Review_Fields = _Review_Auto_Prefilled
+        ? _Required_Fields.filter((_Field) => (
+            _Schema_Field_Has_Usable_Value(_Field) && _Normalize(_Field.source) === 'template_prefill'
+        ))
+        : [];
+    const _Pending_Fields = [
+        ..._Missing_Fields,
+        ..._Review_Fields.filter((_Field) => !_Missing_Fields.some((_Item) => _Item.field_name === _Field.field_name)),
+    ];
+
+    return {
+        template: _Template,
+        schema: _Schema,
+        requiredFields: _Required_Fields,
+        missingFields: _Missing_Fields,
+        reviewFields: _Review_Fields,
+        pendingFields: _Pending_Fields,
+    };
+}
+
+function _Schema_Field_Has_Usable_Value(_Field = {}) {
+    const _Raw = _Field?.value;
+    if (_Raw == null) return false;
+
+    const _Accepted = Array.isArray(_Field.accepted_values) ? _Field.accepted_values : [];
+    if (_Accepted.length) {
+        const _Normalized = _Normalize_Checkbox_Value(_Raw, _Accepted);
+        return _Accepted.some((_Option) => _Normalize(_Option) === _Normalize(_Normalized));
+    }
+
+    const _Value = String(_Raw).trim();
+    if (!_Value) return false;
+
+    if (_Field.field_type === 'date' || _Field.field_name === 'loss_date') {
+        const _Parsed = new Date(_Value);
+        if (Number.isNaN(_Parsed.getTime())) return false;
+        if (_Field.field_name === 'loss_date') {
+            const _Iso = _Parsed.toISOString().slice(0, 10);
+            if (new Date(`${_Iso}T00:00:00Z`) > new Date()) return false;
+        }
+        return true;
+    }
+
+    if (_Field.field_type === 'number' || _POSITIVE_NUMBER_FIELDS.has(_Field.field_name)) {
+        const _Match = _Value.replace(/,/g, '').match(/-?\d+(\.\d+)?/);
+        const _Number = _Match ? Number(_Match[0]) : null;
+        return Number.isFinite(_Number) && _Number > 0;
+    }
+
+    if (['phone_number', 'mobile_number'].includes(_Field.field_name)) {
+        return Boolean(_Normalize_Phone_Value(_Value));
+    }
+
+    if (_Field.field_name === 'aadhaar_number') {
+        return _Value.replace(/[^\d]/g, '').length === 12;
+    }
+
+    if (['bank_ifsc', 'ifsc_code'].includes(_Field.field_name)) {
+        return /^[A-Za-z]{4}[A-Za-z0-9]{7}$/.test(_Value);
+    }
+
+    if (_Field.field_name === 'bank_account_number') {
+        return _Value.replace(/[^\d]/g, '').length >= 6;
+    }
+
+    if (['mailing_pin_code', 'land_pin_code'].includes(_Field.field_name)) {
+        return _Value.replace(/[^\d]/g, '').length === 6;
+    }
+
+    return _Value.length >= 2;
+}
+
+function _Normalize_Phone_Value(_Value) {
+    const _Digits = String(_Value || '').replace(/[^\d]/g, '');
+    if (_Digits.length === 10) return `+91${_Digits}`;
+    if (_Digits.length >= 11 && _Digits.length <= 13) return `+${_Digits}`;
+    return null;
+}
+
 module.exports = {
     _Template_Choices,
     _Parse_Template_Choice,
     _Build_Template_Schema,
     _Schema_Values_Map,
+    _Build_Template_Field_State,
+    _Schema_Field_Has_Usable_Value,
 };
