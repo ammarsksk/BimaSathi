@@ -356,7 +356,13 @@ const _State_Handlers = {
         const _Confirm = `✅ ${_Config._Name} (${_Config._Native_Name}) selected!`;
 
         // Send OTP
-        await _Twilio._Send_OTP(from.replace('whatsapp:', ''));
+        const _Success = await _Twilio._Send_OTP(from.replace('whatsapp:', ''));
+
+        if (!_Success) {
+            return {
+                messages: [{ body: _Selected === 'en' ? '❌ Failed to send OTP. Please try again.' : '❌ OTP bhejne mein dikkat hui. Dobara try karein.' }]
+            };
+        }
 
         return {
             messages: [{ body: _Confirm }, { body: _Lang._Get_Template('otp_prompt', _Selected) }],

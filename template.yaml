@@ -17,7 +17,7 @@ Globals:
         AUDIT_LOG_TABLE: !Ref AuditLogTable
         CONSENT_TABLE: !Ref ConsentTable
         EVIDENCE_BUCKET: !Ref EvidenceBucket
-        BEDROCK_MODEL_ID: us.amazon.nova-pro-v1:0
+        BEDROCK_MODEL_ID: anthropic.claude-3-haiku-20240307-v1:0
         BEDROCK_REGION: us-east-1
         COGNITO_USER_POOL_ID: !Ref UserPool
         COGNITO_CLIENT_ID: !Ref UserPoolClient

@@ -93,14 +93,28 @@ async function _Send_OTP(_Phone_Number) {
     const _Formatted = _Phone_Number.startsWith('+') ? _Phone_Number : `+91${_Phone_Number}`;
     const _URL = `https://verify.twilio.com/v2/Services/${_Verify_SID}/Verifications`;
 
-    const _Response = await fetch(_URL, {
-        method: 'POST',
-        headers: { Authorization: _Auth_Header, 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ To: _Formatted, Channel: 'sms' }),
-    });
+    console.log(`Sending OTP to ${_Formatted} via whatsapp channel...`);
 
-    const _Data = await _Response.json();
-    return _Data.status === 'pending';
+    try {
+        const _Response = await fetch(_URL, {
+            method: 'POST',
+            headers: { Authorization: _Auth_Header, 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ To: _Formatted, Channel: 'whatsapp' }),
+        });
+
+        const _Data = await _Response.json();
+
+        if (!_Response.ok) {
+            console.error(`Twilio OTP send failed [${_Response.status}]: ${JSON.stringify(_Data)}`);
+            return false;
+        }
+
+        console.log(`OTP send status: ${_Data.status}`);
+        return _Data.status === 'pending';
+    } catch (_Error) {
+        console.error('OTP send exception:', _Error.message);
+        return false;
+    }
 }
 
 /**
@@ -113,6 +127,8 @@ async function _Verify_OTP(_Phone_Number, _Code) {
     const _Formatted = _Phone_Number.startsWith('+') ? _Phone_Number : `+91${_Phone_Number}`;
     const _URL = `https://verify.twilio.com/v2/Services/${_Verify_SID}/VerificationCheck`;
 
+    console.log(`Verifying OTP for ${_Formatted}...`);
+
     try {
         const _Response = await fetch(_URL, {
             method: 'POST',
@@ -121,9 +137,16 @@ async function _Verify_OTP(_Phone_Number, _Code) {
         });
 
         const _Data = await _Response.json();
+
+        if (!_Response.ok) {
+            console.error(`Twilio OTP verify failed [${_Response.status}]: ${JSON.stringify(_Data)}`);
+            return false;
+        }
+
+        console.log(`OTP verify result: ${_Data.status}`);
         return _Data.status === 'approved';
     } catch (_Error) {
-        console.error('OTP verification failed:', _Error.message);
+        console.error('OTP verification exception:', _Error.message);
         return false;
     }
 }

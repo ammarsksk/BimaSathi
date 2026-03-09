@@ -42,7 +42,10 @@ exports.handler = async (_Event) => {
 
 async function _Handle_Send_OTP(_Phone_Number) {
     const _Formatted = _Format_Phone(_Phone_Number);
-    await _Send_OTP(_Formatted);
+    const _Success = await _Send_OTP(_Formatted);
+    if (!_Success) {
+        return _API_Response(500, { error: 'Failed to send OTP' });
+    }
     return _API_Response(200, { success: true, message: 'OTP sent successfully' });
 }
 
@@ -94,7 +97,10 @@ async function _Handle_Verify_OTP(_Phone_Number, _Code, _Role = 'farmer') {
 
 async function _Handle_Send_Consent_OTP(_Farmer_Phone) {
     const _Formatted = _Format_Phone(_Farmer_Phone);
-    await _Send_OTP(_Formatted);
+    const _Success = await _Send_OTP(_Formatted);
+    if (!_Success) {
+        return _API_Response(500, { error: 'Failed to send consent OTP' });
+    }
     return _API_Response(200, { success: true, message: 'Consent OTP sent to farmer' });
 }
 
