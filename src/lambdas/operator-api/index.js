@@ -15,6 +15,7 @@ const _Textract = require('../../shared/textract');
 const _Identity = require('../../shared/identity');
 const _Bedrock = require('../../shared/bedrock');
 const _Twilio = require('../../shared/twilio');
+const _Demo_Access = require('../../shared/demo-access');
 const _WhatsApp = require('../../shared/whatsapp');
 const { _Build_Template_Schema, _Build_Template_Field_State, _Template_Choices } = require('../../shared/template-schema');
 const { _Get_Template } = require('../../shared/insurance-templates');
@@ -563,19 +564,24 @@ async function _Request_Farmer_Access(_Operator, _Body) {
     const _Operator_User = await _Ensure_Operator_User(_Operator);
     const _Farmer_User = await _Ensure_Farmer_User(_Body);
     const _Existing = await _Get_Consent_Record(_Farmer_User.phoneNumber, _Operator.phoneNumber);
+    const _Is_Demo_Farmer = _Demo_Access._Is_Demo_Farmer_Phone(_Farmer_User.phoneNumber);
 
     const _Now = new Date();
     const _Otp_Deadline = new Date(_Now.getTime() + 10 * 60 * 1000).toISOString();
     const _Access_Expires = new Date(_Now.getTime() + 12 * 60 * 60 * 1000).toISOString();
 
-    const _Otp_Send = await _Twilio._Send_OTP(_Farmer_User.phoneNumber);
-    try {
-        await _WhatsApp._Send_Text_Message(
-            `whatsapp:${_Farmer_User.phoneNumber}`,
-            `BimaSathi operator ${_Operator.name} wants to help file your claim. Share the OTP sent to your phone only if you approve operator access.`
-        );
-    } catch (_Error) {
-        console.error('Farmer WhatsApp consent notice failed:', _Error.message);
+    const _Otp_Send = _Is_Demo_Farmer
+        ? { success: true, channel: 'demo' }
+        : await _Twilio._Send_OTP(_Farmer_User.phoneNumber);
+    if (!_Is_Demo_Farmer) {
+        try {
+            await _WhatsApp._Send_Text_Message(
+                `whatsapp:${_Farmer_User.phoneNumber}`,
+                `BimaSathi operator ${_Operator.name} wants to help file your claim. Share the OTP sent to your phone only if you approve operator access.`
+            );
+        } catch (_Error) {
+            console.error('Farmer WhatsApp consent notice failed:', _Error.message);
+        }
     }
 
     const _Record = {
@@ -630,7 +636,9 @@ async function _Verify_Farmer_Access(_Operator, _Body) {
     const _Consent = await _Get_Consent_Record(_Farmer_Phone, _Operator.phoneNumber);
     _Require(_Consent, 'No pending consent request found', 404);
 
-    const _Verified = await _Twilio._Verify_OTP(_Farmer_Phone, _Code);
+    const _Verified = _Demo_Access._Is_Demo_Farmer_Phone(_Farmer_Phone)
+        ? _Code === _Demo_Access._DEMO_FIXED_OTP
+        : await _Twilio._Verify_OTP(_Farmer_Phone, _Code);
     _Require(_Verified, 'Invalid or expired OTP', 401);
 
     const _Now = new Date();

@@ -12,7 +12,8 @@ const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, PutCommand,
     UpdateCommand, QueryCommand, ScanCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
 const { randomUUID: _Generate_UUID } = require('crypto');
-const { _Table_Names, _Completeness_Weights, _Claim_Status } = require('./constants');
+const { _Table_Names, _Completeness_Weights, _Claim_Status, _Photo_Config } = require('./constants');
+const { _Build_Template_Field_State } = require('./template-schema');
 
 const _Dynamo_Client = new DynamoDBClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 const _Doc_Client = DynamoDBDocumentClient.from(_Dynamo_Client, {
@@ -639,22 +640,85 @@ async function _Store_Document_Metadata(_Claim_Id, _User_Id, _Doc_Meta) {
  * @returns {number} Score from 0 to 100
  */
 function _Calculate_Completeness_Score(_Claim) {
-    let _Score = 0;
+    if (!_Claim) return 0;
 
-    for (const [_Field, _Weight] of Object.entries(_Completeness_Weights)) {
-        if (_Field === 'photos') {
-            const _Photo_Count = _Claim.approvedPhotoCount || _Claim.photoCount || 0;
-            const _Photo_Ratio = Math.min(_Photo_Count / 3, 1);  // 3 photos = full weight
-            _Score += _Photo_Ratio * _Weight;
-        } else {
-            const _Field_Key = _Field.replace(/_([a-z])/g, (_, _Ch) => _Ch.toUpperCase());  // snake→camel
-            if (_Claim[_Field_Key] || _Claim[_Field]) {
-                _Score += _Weight;
-            }
-        }
+    if (!_Is_Draft_Like_Status(_Claim.status)) {
+        return 100;
     }
 
-    return Math.round(_Score * 100);
+    const _Score = (
+        _Section_Ratio([
+            _Claim.farmerName,
+            _Claim.village,
+            _Claim.district,
+            _Claim.state,
+        ]) * _Completeness_Weights.farmer_section
+        + _Section_Ratio([
+            _Claim.cropType,
+            _Claim.season,
+            _Claim.cause,
+            _Claim.areaHectares,
+        ]) * _Completeness_Weights.crop_section
+        + _Section_Ratio([
+            _Claim.lossDate,
+            _Claim.exactLocation || _Claim.gpsCoords,
+        ]) * _Completeness_Weights.date_location_section
+        + _Document_Ratio(_Claim) * _Completeness_Weights.documents_section
+        + _Identity_Ratio(_Claim) * _Completeness_Weights.identity_section
+        + _Template_Ratio(_Claim) * _Completeness_Weights.insurer_form_section
+        + _Photo_Ratio(_Claim) * _Completeness_Weights.photos_section
+    );
+
+    return Math.max(0, Math.min(100, Math.round(_Score * 100)));
+}
+
+function _Is_Draft_Like_Status(_Status) {
+    return [
+        _Claim_Status.DRAFT,
+        _Claim_Status.EVIDENCE_PENDING,
+        _Claim_Status.LATE_RISK,
+    ].includes(_Status || _Claim_Status.DRAFT);
+}
+
+function _Section_Ratio(_Values = []) {
+    if (!_Values.length) return 0;
+    const _Completed = _Values.filter(_Has_Usable_Value).length;
+    return _Completed / _Values.length;
+}
+
+function _Has_Usable_Value(_Value) {
+    if (_Value == null) return false;
+    if (typeof _Value === 'number') return Number.isFinite(_Value) && _Value > 0;
+    if (typeof _Value === 'boolean') return _Value;
+    if (Array.isArray(_Value)) return _Value.length > 0;
+    if (typeof _Value === 'object') return Object.keys(_Value).length > 0;
+    return String(_Value).trim().length > 0;
+}
+
+function _Document_Ratio(_Claim) {
+    return Number(_Claim?.documentCount || 0) > 0 ? 1 : 0;
+}
+
+function _Identity_Ratio(_Claim) {
+    return _Claim?.identityVerification?.verified ? 1 : 0;
+}
+
+function _Template_Ratio(_Claim) {
+    const _Template_Id = _Claim?.selectedTemplateId || _Claim?.company;
+    if (!_Template_Id) return 0;
+
+    const _Template_State = _Build_Template_Field_State(_Template_Id, _Claim);
+    const _Required = _Template_State?.requiredFields || [];
+    if (!_Required.length) return 1;
+
+    const _Pending = new Set((_Template_State?.pendingFields || []).map((_Field) => _Field.field_name));
+    const _Completed = _Required.filter((_Field) => !_Pending.has(_Field.field_name)).length;
+    return _Completed / _Required.length;
+}
+
+function _Photo_Ratio(_Claim) {
+    const _Photo_Count = Number(_Claim?.approvedPhotoCount || _Claim?.photoCount || 0);
+    return Math.min(_Photo_Count / _Photo_Config.MIN_PHOTOS_REQUIRED, 1);
 }
 
 

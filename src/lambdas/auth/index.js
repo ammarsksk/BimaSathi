@@ -13,12 +13,12 @@ const crypto = require('crypto');
 const { CognitoIdentityProviderClient, AdminCreateUserCommand,
     AdminInitiateAuthCommand, AdminSetUserPasswordCommand } = require('@aws-sdk/client-cognito-identity-provider');
 const { _Send_OTP, _Verify_OTP, _Format_Phone } = require('../../shared/twilio');
+const _Demo_Access = require('../../shared/demo-access');
 const _DB = require('../../shared/dynamodb');
 
 const _Cognito_Client = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION || 'ap-south-1' });
 const _User_Pool_Id = process.env.COGNITO_USER_POOL_ID;
 const _Client_Id = process.env.COGNITO_CLIENT_ID;
-const _OPERATOR_FALLBACK_OTP = '123456';
 
 
 exports.handler = async (_Event) => {
@@ -44,23 +44,25 @@ exports.handler = async (_Event) => {
 
 async function _Handle_Send_OTP(_Phone_Number, _Role = 'farmer') {
     const _Formatted = _Format_Phone(_Phone_Number);
+    const _Is_Demo_Operator = _Role === 'operator' && _Demo_Access._Is_Demo_Operator_Phone(_Formatted);
+    if (_Is_Demo_Operator) {
+        return _API_Response(200, {
+            success: true,
+            message: 'Demo OTP is enabled for this operator account.',
+            channel: 'demo',
+            fallbackOtpEnabled: true,
+        });
+    }
+
     const _Result = await _Send_OTP(_Formatted);
     if (!_Result?.success) {
-        if (_Role === 'operator') {
-            return _API_Response(200, {
-                success: true,
-                message: 'Enter the 6-digit OTP to continue.',
-                channel: null,
-                fallbackOtpEnabled: true,
-            });
-        }
         return _API_Response(502, { error: _Result?.error || 'Failed to send OTP' });
     }
     return _API_Response(200, {
         success: true,
         message: `OTP sent successfully via ${_Result.channel === 'whatsapp' ? 'WhatsApp' : 'SMS'}`,
         channel: _Result.channel,
-        fallbackOtpEnabled: _Role === 'operator',
+        fallbackOtpEnabled: _Is_Demo_Operator,
     });
 }
 
@@ -71,7 +73,11 @@ async function _Handle_Verify_OTP(_Phone_Number, _Code, _Role = 'farmer') {
     const _Clean_Phone = _Phone_Number.replace('whatsapp:', '').replace(/\s/g, '');
     const _Formatted = _Format_Phone(_Clean_Phone);
 
-    const _Using_Fallback_OTP = _Role === 'operator' && String(_Code || '').trim() === _OPERATOR_FALLBACK_OTP;
+    const _Using_Fallback_OTP = (
+        _Role === 'operator'
+        && _Demo_Access._Is_Demo_Operator_Phone(_Formatted)
+        && String(_Code || '').trim() === _Demo_Access._DEMO_FIXED_OTP
+    );
     const _Is_Verified = _Using_Fallback_OTP ? true : await _Verify_OTP(_Formatted, _Code);
     if (!_Is_Verified) {
         return _API_Response(401, { error: 'Invalid OTP' });
@@ -80,7 +86,12 @@ async function _Handle_Verify_OTP(_Phone_Number, _Code, _Role = 'farmer') {
     // Fetch or create user in DynamoDB
     let _User = await _DB._Get_User(_Formatted);
     if (!_User) {
-        _User = await _DB._Create_User({ phoneNumber: _Formatted, role: _Role });
+        _User = await _DB._Create_User({
+            phoneNumber: _Formatted,
+            role: _Role,
+            name: _Using_Fallback_OTP ? 'Demo Operator' : null,
+            language: 'en',
+        });
     }
 
     const _Tokens = await _Create_Auth_Session(_Clean_Phone, _Formatted, _Role);

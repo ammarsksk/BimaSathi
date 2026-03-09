@@ -157,18 +157,13 @@ const _Claim_Intake_Fields = Object.freeze([
 //  Completeness Score Weights — decimal weights summing to 1.0
 // ─────────────────────────────────────────────────────────────
 const _Completeness_Weights = Object.freeze({
-    farmer_name: 0.10,
-    village: 0.08,
-    district: 0.08,
-    state: 0.05,
-    crop_type: 0.10,
-    season: 0.05,
-    loss_date: 0.12,
-    cause: 0.10,
-    area_hectares: 0.07,
-    policy_type: 0.05,
-    bank_last_4: 0.05,
-    photos: 0.15,   // evidence photos (min 3)
+    farmer_section: 0.18,
+    crop_section: 0.22,
+    date_location_section: 0.15,
+    documents_section: 0.08,
+    identity_section: 0.15,
+    insurer_form_section: 0.12,
+    photos_section: 0.10,
 });
 
 
